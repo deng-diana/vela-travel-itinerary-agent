@@ -28,8 +28,11 @@ type RestaurantOption = {
   name: string
   cuisine: string
   neighborhood: string
-  must_order_dish: string
+  must_order_dish?: string | null
   reservation_link: string
+  maps_url?: string | null
+  photo_name?: string | null
+  photo_attribution?: string | null
 }
 type ExperienceOption = { id: string; name: string; category: string; neighborhood: string; booking_link: string }
 type DayItem = {
@@ -516,25 +519,30 @@ function TypewriterText({ text, animate }: { text: string; animate: boolean }) {
   const [visibleText, setVisibleText] = useState(text)
 
   useEffect(() => {
-    if (!animate) {
-      setVisibleText(text)
-      return
-    }
+    if (!animate) return
 
-    setVisibleText('')
     let index = 0
-    const timer = window.setInterval(() => {
-      index += 2
-      setVisibleText(text.slice(0, index))
-      if (index >= text.length) {
-        window.clearInterval(timer)
-      }
-    }, 12)
+    let timer: number | null = null
+    const raf = window.requestAnimationFrame(() => {
+      setVisibleText('')
+      timer = window.setInterval(() => {
+        index += 2
+        setVisibleText(text.slice(0, index))
+        if (index >= text.length && timer) {
+          window.clearInterval(timer)
+          timer = null
+        }
+      }, 12)
+    })
 
-    return () => window.clearInterval(timer)
+    return () => {
+      window.cancelAnimationFrame(raf)
+      if (timer) window.clearInterval(timer)
+    }
   }, [text, animate])
 
-  return <span className={animate ? 'agent-shimmer-text' : ''}>{visibleText}</span>
+  const displayText = animate ? visibleText : text
+  return <span className={animate ? 'agent-shimmer-text' : ''}>{displayText}</span>
 }
 
 function makeActiveStep(toolName: string): AgentStep {

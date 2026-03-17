@@ -75,6 +75,9 @@ class HotelOption(BaseModel):
     affiliate_link: HttpUrl
     key_highlights: list[str] = Field(default_factory=list)
     short_description: str
+    maps_url: HttpUrl | None = None
+    photo_name: str | None = None
+    photo_attribution: str | None = None
 
 
 class RestaurantOption(BaseModel):
@@ -83,9 +86,13 @@ class RestaurantOption(BaseModel):
     cuisine: str
     price_range: str
     neighborhood: str
-    must_order_dish: str
+    must_order_dish: str | None = None
     reservation_link: HttpUrl
     why_it_fits: str
+    maps_url: HttpUrl | None = None
+    photo_name: str | None = None
+    photo_attribution: str | None = None
+
 
 
 class ExperienceOption(BaseModel):
@@ -98,6 +105,9 @@ class ExperienceOption(BaseModel):
     booking_link: HttpUrl
     best_time: str
     why_it_fits: str
+    maps_url: HttpUrl | None = None
+    photo_name: str | None = None
+    photo_attribution: str | None = None
 
 
 class DayItem(BaseModel):
@@ -130,4 +140,3 @@ class ItineraryDraft(BaseModel):
     experiences: list[ExperienceOption] = Field(default_factory=list)
     days: list[DayPlan] = Field(default_factory=list)
     summary: str
-

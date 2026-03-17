@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from src.api.dependencies import get_orchestrator, get_session_store, get_settings
 from src.api.models import ChatRequest, ChatResponse
@@ -33,6 +34,32 @@ def healthcheck() -> dict[str, str | bool]:
         "anthropic_configured": bool(settings.anthropic_api_key),
         "model": settings.anthropic_model,
     }
+
+
+@app.get("/places/photo")
+def place_photo(name: str = Query(..., min_length=10), max_width_px: int = Query(800, ge=200, le=1600)) -> RedirectResponse:
+    settings = get_settings()
+    if not settings.google_maps_api_key:
+        raise HTTPException(status_code=500, detail="GOOGLE_MAPS_API_KEY is not configured.")
+
+    try:
+        response = httpx.get(
+            f"https://places.googleapis.com/v1/{name}/media",
+            params={
+                "key": settings.google_maps_api_key,
+                "maxWidthPx": max_width_px,
+                "skipHttpRedirect": "true",
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        photo_uri = payload.get("photoUri")
+        if not photo_uri:
+            raise HTTPException(status_code=404, detail="Photo not available.")
+        return RedirectResponse(photo_uri)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="Failed to fetch Google Places photo.") from exc
 
 
 @app.post("/chat", response_model=ChatResponse)

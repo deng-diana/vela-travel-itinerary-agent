@@ -19,6 +19,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 class Settings:
     anthropic_api_key: str | None
     anthropic_model: str
+    google_maps_api_key: str | None
 
 
 @lru_cache(maxsize=1)
@@ -26,6 +27,7 @@ def get_settings() -> Settings:
     return Settings(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-opus-4-1-20250805"),
+        google_maps_api_key=os.getenv("GOOGLE_MAPS_API_KEY"),
     )
 
 
