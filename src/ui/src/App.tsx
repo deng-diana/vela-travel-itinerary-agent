@@ -1,256 +1,397 @@
-import { Compass, CloudSun, Hotel, Sparkles, UtensilsCrossed } from 'lucide-react'
+import { useState } from 'react'
+import type { FormEvent } from 'react'
 
-const conversation = [
-  {
-    role: 'user',
-    text: "I'm going to Tokyo for 6 days in August. Mid-range budget, really into food and hidden gems. Travelling as a couple.",
-  },
-  {
-    role: 'assistant',
-    text: 'Great start. I can shape this into a live itinerary. Before I do, I need your preferred neighborhood, hotel style, and whether either of you has dietary restrictions.',
-  },
-]
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
 
-const activity = [
-  'Parsing trip intent',
-  'Checking seasonal weather in August',
-  'Shortlisting stays near Shibuya and Shinjuku',
-  'Mapping food-led experiences with lighter pacing',
-]
+type ChatMessage = {
+  role: 'user' | 'assistant'
+  text: string
+}
 
-const days = [
-  {
-    title: 'Day 1',
-    theme: 'Arrival + slow evening',
-    items: ['Check into selected stay', 'Golden Gai dinner lane', 'Late-night jazz bar'],
-  },
-  {
-    title: 'Day 2',
-    theme: 'Markets + hidden food spots',
-    items: ['Morning coffee in Kiyosumi', 'Chef-led food crawl', 'Riverside walk at sunset'],
-  },
-]
+type StreamEvent = {
+  type: string
+  message?: string | null
+  tool_name?: string | null
+  payload?: unknown
+}
+
+type WeatherSummary = {
+  destination: string
+  month: string
+  avg_temp_c: number | null
+  rainfall_mm: number | null
+  conditions_summary: string
+  packing_notes: string[]
+}
+
+type HotelOption = {
+  id: string
+  name: string
+  neighborhood: string
+  category: string
+  nightly_rate_usd: number
+  affiliate_link: string
+  key_highlights: string[]
+}
+
+type RestaurantOption = {
+  id: string
+  name: string
+  cuisine: string
+  neighborhood: string
+  must_order_dish: string
+  reservation_link: string
+}
+
+type ExperienceOption = {
+  id: string
+  name: string
+  category: string
+  neighborhood: string
+  booking_link: string
+}
+
+type DayItem = {
+  time_label: string
+  kind: string
+  title: string
+  neighborhood?: string | null
+  description: string
+  booking_link?: string | null
+}
+
+type DayPlan = {
+  day_number: number
+  theme: string
+  summary: string
+  items: DayItem[]
+}
+
+type ItineraryDraft = {
+  destination: string
+  month: string
+  trip_length_days: number
+  interests: string[]
+  weather?: WeatherSummary | null
+  selected_hotel?: HotelOption | null
+  hotels: HotelOption[]
+  restaurants: RestaurantOption[]
+  experiences: ExperienceOption[]
+  days: DayPlan[]
+  summary: string
+}
+
+const initialPrompt =
+  'I am going to Tokyo for 6 days in August. Mid-range budget, really into food and hidden gems. Travelling as a couple.'
 
 function App() {
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [input, setInput] = useState(initialPrompt)
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [events, setEvents] = useState<StreamEvent[]>([])
+  const [itinerary, setItinerary] = useState<ItineraryDraft | null>(null)
+  const [isStreaming, setIsStreaming] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmed = input.trim()
+    if (!trimmed || isStreaming) return
+
+    setError(null)
+    setIsStreaming(true)
+    setMessages((current) => [...current, { role: 'user', text: trimmed }])
+    setEvents([])
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          session_id: sessionId,
+          message: trimmed,
+        }),
+      })
+
+      if (!response.ok || !response.body) {
+        throw new Error(`Stream request failed with status ${response.status}`)
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const chunks = buffer.split('\n\n')
+        buffer = chunks.pop() ?? ''
+
+        for (const chunk of chunks) {
+          const parsed = parseSseChunk(chunk)
+          if (!parsed) continue
+
+          const streamEvent: StreamEvent = {
+            type: parsed.event,
+            ...(parsed.data as Record<string, unknown>),
+          }
+
+          setEvents((current) => [...current, streamEvent])
+          applyStreamEvent(streamEvent)
+        }
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Unknown stream error')
+    } finally {
+      setIsStreaming(false)
+      setInput('')
+    }
+  }
+
+  function applyStreamEvent(streamEvent: StreamEvent) {
+    if (streamEvent.type === 'session') {
+      const payload = streamEvent.payload as { session_id?: string } | undefined
+      if (payload?.session_id) {
+        setSessionId(payload.session_id)
+      }
+      return
+    }
+
+    if (streamEvent.type === 'assistant_message' && streamEvent.message) {
+      setMessages((current) => [...current, { role: 'assistant', text: streamEvent.message ?? '' }])
+      return
+    }
+
+    if (streamEvent.type === 'tool_completed' && streamEvent.tool_name) {
+      setItinerary((current) => {
+        const next: ItineraryDraft = current ?? {
+          destination: '',
+          month: '',
+          trip_length_days: 0,
+          interests: [],
+          hotels: [],
+          restaurants: [],
+          experiences: [],
+          days: [],
+          summary: '',
+        }
+
+        switch (streamEvent.tool_name) {
+          case 'get_weather':
+            next.weather = streamEvent.payload as WeatherSummary
+            break
+          case 'get_hotels': {
+            const hotels = streamEvent.payload as HotelOption[]
+            next.hotels = hotels
+            next.selected_hotel = hotels[0] ?? null
+            break
+          }
+          case 'get_restaurants':
+            next.restaurants = streamEvent.payload as RestaurantOption[]
+            break
+          case 'get_experiences':
+            next.experiences = streamEvent.payload as ExperienceOption[]
+            break
+          case 'get_daily_structure':
+            next.days = streamEvent.payload as DayPlan[]
+            break
+          default:
+            break
+        }
+
+        return { ...next }
+      })
+      return
+    }
+
+    if (streamEvent.type === 'final_response') {
+      if (streamEvent.message) {
+        setMessages((current) => [...current, { role: 'assistant', text: streamEvent.message ?? '' }])
+      }
+      const payload = streamEvent.payload as { itinerary?: ItineraryDraft | null } | undefined
+      if (payload?.itinerary) {
+        setItinerary(payload.itinerary)
+      }
+    }
+  }
+
   return (
-    <main className="min-h-screen bg-[var(--bg)] text-[var(--text-primary)]">
-      <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col px-4 py-4 lg:px-6 lg:py-6">
-        <div className="relative overflow-hidden rounded-[28px] border border-white/10 bg-[var(--panel)] shadow-[0_30px_120px_rgba(3,8,16,0.45)]">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(123,211,194,0.14),transparent_28%),radial-gradient(circle_at_top_right,rgba(244,178,97,0.12),transparent_24%),linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0))]" />
+    <main className="min-h-screen bg-slate-950 text-slate-100">
+      <div className="mx-auto grid min-h-screen max-w-7xl gap-4 p-4 lg:grid-cols-[420px_minmax(0,1fr)]">
+        <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5">
+          <div className="mb-4">
+            <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Conversation</p>
+            <h1 className="mt-2 text-2xl font-semibold">Vela MVP Tester</h1>
+            <p className="mt-2 text-sm text-slate-400">
+              Session: {sessionId ?? 'new session'} {isStreaming ? '• streaming' : ''}
+            </p>
+          </div>
 
-          <header className="relative flex items-center justify-between border-b border-white/10 px-5 py-4 lg:px-8">
-            <div>
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/6">
-                  <Compass className="h-5 w-5 text-[var(--accent)]" />
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-[0.32em] text-[var(--text-muted)]">
-                    Vela
-                  </p>
-                  <h1 className="text-lg font-semibold tracking-[-0.03em] text-white">
-                    Live Itinerary Studio
-                  </h1>
-                </div>
-              </div>
+          <form className="space-y-3" onSubmit={handleSubmit}>
+            <textarea
+              className="min-h-36 w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 outline-none"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Describe the trip you want to plan..."
+            />
+            <button
+              className="w-full rounded-2xl bg-emerald-400 px-4 py-3 font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              disabled={isStreaming}
+              type="submit"
+            >
+              {isStreaming ? 'Streaming...' : 'Send'}
+            </button>
+          </form>
+
+          {error ? (
+            <div className="mt-4 rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {error}
             </div>
+          ) : null}
 
-            <div className="hidden items-center gap-3 lg:flex">
-              <span className="rounded-full border border-emerald-300/20 bg-emerald-300/10 px-3 py-1 text-xs text-emerald-100">
-                Agent online
-              </span>
-              <span className="rounded-full border border-white/10 bg-white/6 px-3 py-1 text-xs text-[var(--text-muted)]">
-                Tokyo / 6 days
-              </span>
-            </div>
-          </header>
-
-          <section className="relative grid min-h-[820px] grid-cols-1 lg:grid-cols-[420px_minmax(0,1fr)]">
-            <aside className="border-b border-white/10 bg-[rgba(7,14,24,0.72)] lg:border-b-0 lg:border-r lg:border-white/10">
-              <div className="flex h-full flex-col">
-                <div className="border-b border-white/10 px-5 py-5 lg:px-6">
-                  <p className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">
-                    Conversation
-                  </p>
-                  <p className="mt-2 max-w-sm text-sm leading-6 text-[var(--text-secondary)]">
-                    The agent asks before acting, shows progress, and keeps the plan adaptable.
-                  </p>
+          <div className="mt-6 space-y-3">
+            {messages.map((message, index) => (
+              <article
+                key={`${message.role}-${index}`}
+                className={`rounded-2xl px-4 py-3 text-sm leading-6 ${
+                  message.role === 'user'
+                    ? 'ml-8 bg-emerald-500/20 text-emerald-50'
+                    : 'mr-6 border border-slate-700 bg-slate-950 text-slate-200'
+                }`}
+              >
+                <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">
+                  {message.role}
                 </div>
+                {message.text}
+              </article>
+            ))}
+          </div>
+        </section>
 
-                <div className="flex-1 space-y-4 px-5 py-5 lg:px-6">
-                  {conversation.map((message) => (
-                    <div
-                      key={`${message.role}-${message.text.slice(0, 12)}`}
-                      className={
-                        message.role === 'user'
-                          ? 'ml-8 rounded-[24px] rounded-tr-md bg-[var(--bubble-user)] px-4 py-4 text-sm leading-6 text-white'
-                          : 'mr-6 rounded-[24px] rounded-tl-md border border-white/10 bg-white/5 px-4 py-4 text-sm leading-6 text-[var(--text-secondary)]'
-                      }
-                    >
-                      <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-[var(--text-muted)]">
-                        {message.role === 'user' ? 'Traveller' : 'Vela'}
-                      </div>
-                      {message.text}
+        <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-5">
+          <div className="grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
+            <aside className="space-y-4">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Event Stream</p>
+                <div className="mt-3 max-h-[70vh] space-y-2 overflow-auto">
+                  {events.map((event, index) => (
+                    <div key={`${event.type}-${index}`} className="rounded-xl border border-slate-800 px-3 py-2 text-xs">
+                      <div className="font-semibold text-emerald-300">{event.type}</div>
+                      <div className="mt-1 text-slate-400">{event.tool_name ?? event.message ?? ''}</div>
                     </div>
                   ))}
-                </div>
-
-                <div className="border-t border-white/10 px-5 py-5 lg:px-6">
-                  <div className="rounded-[24px] border border-white/10 bg-black/20 p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <p className="text-xs uppercase tracking-[0.24em] text-[var(--text-muted)]">
-                        Agent activity
-                      </p>
-                      <Sparkles className="h-4 w-4 text-[var(--accent-warm)]" />
-                    </div>
-                    <div className="space-y-3">
-                      {activity.map((item) => (
-                        <div key={item} className="flex items-center gap-3 text-sm text-[var(--text-secondary)]">
-                          <span className="h-2 w-2 rounded-full bg-[var(--accent)]" />
-                          <span>{item}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               </div>
             </aside>
 
-            <section className="bg-[rgba(9,17,29,0.78)] px-5 py-5 lg:px-7">
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_320px]">
-                <div className="space-y-4">
-                  <div className="rounded-[26px] border border-white/10 bg-[var(--card-strong)] p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">
-                          Seasonal brief
-                        </p>
-                        <div className="mt-3 flex items-center gap-3">
-                          <CloudSun className="h-9 w-9 text-[var(--accent)]" />
-                          <div>
-                            <h2 className="text-xl font-semibold tracking-[-0.04em] text-white">
-                              Tokyo in August
-                            </h2>
-                            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                              Warm, humid, occasional rainfall. Plan shaded walks, slower afternoons, and breathable layers.
-                            </p>
-                          </div>
+            <div className="space-y-4">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+                <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Live Itinerary</p>
+                {!itinerary ? (
+                  <p className="mt-3 text-sm text-slate-400">Send a trip request to see live updates here.</p>
+                ) : (
+                  <div className="mt-4 space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="rounded-2xl border border-slate-800 p-4">
+                        <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Trip</div>
+                        <div className="mt-2 text-lg font-semibold">
+                          {itinerary.destination || 'Destination pending'} / {itinerary.trip_length_days || '?'} days
+                        </div>
+                        <div className="mt-1 text-sm text-slate-400">{itinerary.month}</div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-800 p-4">
+                        <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Weather</div>
+                        <div className="mt-2 text-sm text-slate-200">
+                          {itinerary.weather
+                            ? `${itinerary.weather.destination}: ${itinerary.weather.conditions_summary}`
+                            : 'Waiting for weather'}
                         </div>
                       </div>
-                      <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right">
-                        <p className="text-xs uppercase tracking-[0.22em] text-[var(--text-muted)]">Avg temp</p>
-                        <p className="mt-1 text-2xl font-semibold text-white">29°C</p>
+                    </div>
+
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <SummaryCard
+                        title="Hotels"
+                        lines={itinerary.hotels.map((hotel) => `${hotel.name} · ${hotel.neighborhood}`)}
+                      />
+                      <SummaryCard
+                        title="Restaurants"
+                        lines={itinerary.restaurants.map((restaurant) => `${restaurant.name} · ${restaurant.neighborhood}`)}
+                      />
+                      <SummaryCard
+                        title="Experiences"
+                        lines={itinerary.experiences.map((experience) => `${experience.name} · ${experience.neighborhood}`)}
+                      />
+                    </div>
+
+                    <div className="rounded-2xl border border-slate-800 p-4">
+                      <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Day by day</div>
+                      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                        {itinerary.days.map((day) => (
+                          <article key={day.day_number} className="rounded-2xl border border-slate-800 bg-slate-950 p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <h2 className="text-lg font-semibold">Day {day.day_number}</h2>
+                              <span className="text-xs uppercase tracking-[0.18em] text-emerald-300">{day.theme}</span>
+                            </div>
+                            <p className="mt-2 text-sm text-slate-400">{day.summary}</p>
+                            <div className="mt-4 space-y-2">
+                              {day.items.map((item, index) => (
+                                <div key={`${item.title}-${index}`} className="rounded-xl border border-slate-800 px-3 py-2 text-sm">
+                                  <div className="font-medium text-slate-100">
+                                    {item.time_label} · {item.title}
+                                  </div>
+                                  <div className="mt-1 text-slate-400">{item.description}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </article>
+                        ))}
                       </div>
                     </div>
                   </div>
-
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <article className="rounded-[24px] border border-white/10 bg-white/5 p-5">
-                      <div className="mb-4 flex items-center gap-3">
-                        <Hotel className="h-5 w-5 text-[var(--accent)]" />
-                        <p className="text-sm font-medium text-white">Selected stay</p>
-                      </div>
-                      <h3 className="text-lg font-semibold text-white">Aoyama Terrace Hotel</h3>
-                      <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                        Mid-range boutique stay with calm interiors, strong food access, and easy evening movement.
-                      </p>
-                      <div className="mt-4 flex items-center justify-between">
-                        <span className="text-sm text-[var(--text-muted)]">$220/night</span>
-                        <button className="rounded-full bg-[var(--accent-warm)] px-4 py-2 text-sm font-medium text-slate-950">
-                          Book stay
-                        </button>
-                      </div>
-                    </article>
-
-                    <article className="rounded-[24px] border border-white/10 bg-white/5 p-5">
-                      <div className="mb-4 flex items-center gap-3">
-                        <UtensilsCrossed className="h-5 w-5 text-[var(--accent-warm)]" />
-                        <p className="text-sm font-medium text-white">Dining direction</p>
-                      </div>
-                      <h3 className="text-lg font-semibold text-white">Food-led hidden gems</h3>
-                      <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                        Low-tourist neighborhoods, chef counters, kissaten mornings, and one memorable late-night spot.
-                      </p>
-                      <div className="mt-4 text-sm text-[var(--text-muted)]">
-                        8 candidate venues shortlisted
-                      </div>
-                    </article>
-                  </div>
-
-                  <div className="rounded-[28px] border border-white/10 bg-[var(--card-soft)] p-5">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">
-                          Day by day
-                        </p>
-                        <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
-                          Itinerary taking shape
-                        </h2>
-                      </div>
-                      <div className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-[var(--text-muted)]">
-                        live draft
-                      </div>
-                    </div>
-
-                    <div className="mt-5 grid gap-4 lg:grid-cols-2">
-                      {days.map((day) => (
-                        <article key={day.title} className="rounded-[24px] border border-white/10 bg-black/15 p-4">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-lg font-semibold text-white">{day.title}</h3>
-                            <span className="text-xs uppercase tracking-[0.22em] text-[var(--accent)]">
-                              {day.theme}
-                            </span>
-                          </div>
-                          <div className="mt-4 space-y-3">
-                            {day.items.map((item) => (
-                              <div
-                                key={item}
-                                className="rounded-2xl border border-white/8 bg-white/5 px-3 py-3 text-sm text-[var(--text-secondary)]"
-                              >
-                                {item}
-                              </div>
-                            ))}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <aside className="space-y-4">
-                  <div className="rounded-[24px] border border-white/10 bg-white/5 p-5">
-                    <p className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">
-                      Route logic
-                    </p>
-                    <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                      Days are being grouped by neighborhood to reduce transit drag and keep evenings flexible.
-                    </p>
-                  </div>
-
-                  <div className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(244,178,97,0.18),rgba(255,255,255,0.04))] p-5">
-                    <p className="text-xs uppercase tracking-[0.28em] text-[var(--text-muted)]">
-                      Next question
-                    </p>
-                    <h3 className="mt-3 text-xl font-semibold tracking-[-0.04em] text-white">
-                      Do you want a quieter boutique stay, or something more central and energetic?
-                    </h3>
-                    <div className="mt-5 flex flex-wrap gap-3">
-                      <button className="rounded-full border border-white/10 bg-white px-4 py-2 text-sm font-medium text-slate-900">
-                        Quiet boutique
-                      </button>
-                      <button className="rounded-full border border-white/10 bg-transparent px-4 py-2 text-sm font-medium text-white">
-                        Central energy
-                      </button>
-                    </div>
-                  </div>
-                </aside>
+                )}
               </div>
-            </section>
-          </section>
-        </div>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   )
+}
+
+function SummaryCard({ title, lines }: { title: string; lines: string[] }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 p-4">
+      <div className="text-xs uppercase tracking-[0.22em] text-slate-400">{title}</div>
+      <div className="mt-3 space-y-2">
+        {lines.length ? (
+          lines.map((line) => (
+            <div key={line} className="rounded-xl border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200">
+              {line}
+            </div>
+          ))
+        ) : (
+          <div className="text-sm text-slate-500">Waiting for {title.toLowerCase()}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function parseSseChunk(chunk: string): { event: string; data: unknown } | null {
+  const lines = chunk.split('\n')
+  const eventLine = lines.find((line) => line.startsWith('event: '))
+  const dataLine = lines.find((line) => line.startsWith('data: '))
+  if (!eventLine || !dataLine) return null
+
+  return {
+    event: eventLine.slice(7).trim(),
+    data: JSON.parse(dataLine.slice(6)),
+  }
 }
 
 export default App

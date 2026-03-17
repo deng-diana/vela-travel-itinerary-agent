@@ -8,6 +8,7 @@ from src.tools.schemas import ItineraryDraft
 
 
 AgentEventType = Literal[
+    "session",
     "assistant_message",
     "tool_started",
     "tool_completed",

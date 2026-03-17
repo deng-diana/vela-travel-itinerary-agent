@@ -4,12 +4,12 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+from src.tools.live_weather import get_weather
 from src.tools.mock_data import (
     get_daily_structure,
     get_experiences,
     get_hotels,
     get_restaurants,
-    get_weather,
 )
 from src.tools.schemas import (
     DailyStructureInput,
@@ -32,7 +32,7 @@ class ToolSpec(BaseModel):
 TOOL_SPECS: list[ToolSpec] = [
     ToolSpec(
         name="get_weather",
-        description="Return typical weather for a destination and month, including temperature, rainfall, summary, and packing notes.",
+        description="Return a live destination weather snapshot, including current temperature, short-term precipitation outlook, summary, and packing notes.",
         input_model=WeatherInput,
     ),
     ToolSpec(

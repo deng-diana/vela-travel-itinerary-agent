@@ -26,12 +26,20 @@ class AgentOrchestrator:
     max_tokens: int = 1800
 
     def run(self, state: ConversationState, user_message: str) -> AgentRunResult:
+        events = list(self.stream(state=state, user_message=user_message))
+        final_event = next((event for event in reversed(events) if event.type == "final_response"), None)
+        reply = final_event.message if final_event and final_event.message else ""
+        itinerary = state.last_itinerary
+        return AgentRunResult(reply=reply, events=events, itinerary=itinerary)
+
+    def stream(self, state: ConversationState, user_message: str):
         messages = list(state.messages)
         messages.append({"role": "user", "content": user_message.strip()})
 
-        events: list[AgentEvent] = []
         tool_inputs: dict[str, dict[str, Any]] = {}
         tool_payloads: dict[str, Any] = {}
+
+        yield AgentEvent(type="session", payload={"session_id": state.session_id})
 
         response = self._create_message(messages)
 
@@ -41,7 +49,7 @@ class AgentOrchestrator:
 
             preface = self._extract_text(assistant_blocks)
             if preface:
-                events.append(AgentEvent(type="assistant_message", message=preface))
+                yield AgentEvent(type="assistant_message", message=preface)
 
             tool_results = []
             for block in assistant_blocks:
@@ -51,12 +59,10 @@ class AgentOrchestrator:
                 tool_name = block["name"]
                 tool_input = block.get("input", {})
                 tool_inputs[tool_name] = tool_input
-                events.append(
-                    AgentEvent(
-                        type="tool_started",
-                        tool_name=tool_name,
-                        message=f"Running {tool_name}",
-                    )
+                yield AgentEvent(
+                    type="tool_started",
+                    tool_name=tool_name,
+                    message=f"Running {tool_name}",
                 )
 
                 try:
@@ -69,12 +75,10 @@ class AgentOrchestrator:
                             "content": json.dumps(tool_output, ensure_ascii=False),
                         }
                     )
-                    events.append(
-                        AgentEvent(
-                            type="tool_completed",
-                            tool_name=tool_name,
-                            payload=tool_output,
-                        )
+                    yield AgentEvent(
+                        type="tool_completed",
+                        tool_name=tool_name,
+                        payload=tool_output,
                     )
                 except Exception as exc:  # pragma: no cover - defensive path
                     tool_results.append(
@@ -85,12 +89,10 @@ class AgentOrchestrator:
                             "is_error": True,
                         }
                     )
-                    events.append(
-                        AgentEvent(
-                            type="tool_completed",
-                            tool_name=tool_name,
-                            payload={"error": str(exc)},
-                        )
+                    yield AgentEvent(
+                        type="tool_completed",
+                        tool_name=tool_name,
+                        payload={"error": str(exc)},
                     )
 
             messages.append({"role": "user", "content": tool_results})
@@ -107,8 +109,14 @@ class AgentOrchestrator:
         state.messages = messages
         state.last_itinerary = itinerary
 
-        events.append(AgentEvent(type="final_response", message=reply))
-        return AgentRunResult(reply=reply, events=events, itinerary=itinerary)
+        yield AgentEvent(
+            type="final_response",
+            message=reply,
+            payload={
+                "reply": reply,
+                "itinerary": itinerary.model_dump(mode="json") if itinerary else None,
+            },
+        )
 
     def _create_message(self, messages: list[dict[str, Any]]) -> Any:
         return self.client.messages.create(
