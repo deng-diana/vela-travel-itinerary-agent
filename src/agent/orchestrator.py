@@ -101,6 +101,8 @@ class AgentOrchestrator:
 
         reply = self._extract_text(final_blocks)
         itinerary = self._build_itinerary(tool_inputs, tool_payloads, reply, state.last_itinerary)
+        reply = self._compact_reply(reply, itinerary)
+
 
         state.messages = messages
         state.last_itinerary = itinerary
@@ -186,4 +188,29 @@ class AgentOrchestrator:
             experiences=experiences,
             days=days,
             summary=reply or (previous.summary if previous else "Trip plan updated."),
+        )
+
+    def _compact_reply(self, reply: str, itinerary: ItineraryDraft | None) -> str:
+        if not itinerary:
+            return reply.strip()
+
+        if len(reply.strip()) <= 420:
+            return reply.strip()
+
+        standout_bits = []
+        if itinerary.selected_hotel:
+            standout_bits.append(f"selected {itinerary.selected_hotel.name} as your base")
+        if itinerary.restaurants:
+            standout_bits.append(f"anchored the food plan around {itinerary.restaurants[0].name}")
+        if itinerary.experiences:
+            standout_bits.append(f"included {itinerary.experiences[0].name}")
+
+        standout = ", and ".join(standout_bits[:2]) if standout_bits else "built a balanced plan"
+        pace_hint = itinerary.days[0].theme if itinerary.days else "a coherent day-by-day structure"
+
+        return (
+            f"I've built a {itinerary.trip_length_days}-day {itinerary.destination} itinerary optimized for "
+            f"{', '.join(itinerary.interests) if itinerary.interests else 'your trip goals'}. "
+            f"I {standout}, with {pace_hint.lower()}. "
+            f"If you want, I can now refine it for romance, budget, pace, or neighborhood preference."
         )
