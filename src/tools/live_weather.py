@@ -81,6 +81,8 @@ def _to_summary(destination: str, month: str, forecast: dict) -> WeatherSummary:
 
 
 def _conditions(current_temp: float | None, current_precip: float, highs: list[float], lows: list[float]) -> str:
+    # TODO: tighten wording thresholds and phrasing so "17C" is not described as cool
+    # and precipitation copy reads more naturally in the UI.
     if current_temp is None:
         return "Live weather snapshot available with mixed short-term conditions."
 
