@@ -12,7 +12,11 @@ htmlcov/
 .venv/
 venv/
 ENV/
+node_modules/
+dist/
 
 .idea/
 .vscode/
 
+node_modules/
+dist/
