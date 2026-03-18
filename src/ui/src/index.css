@@ -1,5 +1,26 @@
-@import url("https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400;1,600&family=JetBrains+Mono:wght@400;500;600&display=swap");
 @import "tailwindcss";
+
+/* ── Story Mode design tokens ─────────────────────────────────── */
+
+/* story-slide: every slide component uses this as its root class */
+.story-slide {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+:root {
+  --story-bg: #0A0A0A;
+  --story-text: #F5F0E8;
+  --story-text-muted: rgba(245, 240, 232, 0.55);
+  --story-accent: #C4715C;
+  --story-accent2: #2A7F6F;
+  --story-border: rgba(245, 240, 232, 0.12);
+  --story-overlay: rgba(10, 10, 10, 0.62);
+  --font-editorial: 'Cormorant Garamond', Georgia, serif;
+  --font-data: 'JetBrains Mono', 'Fira Code', monospace;
+}
 
 :root {
   --bg: #071019;
