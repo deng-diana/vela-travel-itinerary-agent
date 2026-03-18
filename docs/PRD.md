@@ -60,7 +60,21 @@ If the user changes a preference, the plan should evolve from the current conver
 
 ### 4.5 Structure First, Warmth Second
 
-The itinerary should be built in a deterministic planning layer first, then polished by the model for tone and warmth. This keeps the plan stable while still making the product feel thoughtful and human.
+The itinerary should be drafted by the model using real tool context, then checked and corrected by a planning layer with soft guardrails. This keeps the plan expressive and warm without letting it drift into generic or repetitive output.
+
+### 4.6 Verify Before Showing
+
+The agent should not assume the first draft is good enough. Before the final itinerary is shown, the system should verify it against a quality rubric:
+
+- enough coverage across each day
+- limited repetition
+- geographically sensible clustering
+- pacing that matches the brief
+- strong fit to the traveller's goals
+- respect for stated constraints
+- at least one or two memorable anchors
+
+If the draft fails the rubric, the system should repair it rather than showing a low-value plan.
 
 ## 5. Functional Requirements
 
@@ -139,7 +153,7 @@ These are implementation choices for this repository, not extra assessment requi
 - Anthropic Claude for intent extraction, clarifying questions, copy polish, and final response
 - Pydantic v2 for tool and API schemas
 - in-memory session state for the assessment build
-- code-led planning logic for day structure and adaptive updates
+- model-led itinerary drafting with code-based quality verification and adaptive updates
 
 ### 6.2 Frontend
 
@@ -154,7 +168,8 @@ The preferred architecture is:
 - one lead agent
 - one structured planning brief in session state
 - parallel tool gathering for weather, hotels, restaurants, and experiences
-- one planning layer that turns gathered results into day-by-day structure
+- one planning layer that gives Claude the gathered venue set and trip brief
+- one verification layer that checks quality and triggers repair if needed
 - one polishing layer that makes the final copy warmer and more useful
 
 This is preferred over multiple independent LLM sub-agents because it is easier to debug, cheaper to run, and more stable when the user changes preferences.

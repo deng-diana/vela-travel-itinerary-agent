@@ -264,12 +264,11 @@ function App() {
               <div className="mx-auto mt-10 flex min-h-[620px] max-w-3xl flex-col rounded-[32px] border border-white/10 bg-slate-950/70">
                 <div className="flex-1 overflow-auto px-5 py-5 lg:px-6 lg:py-6">
                   <div className="space-y-3">
-                    <div className="rounded-[20px] border border-slate-800 bg-slate-900/70 px-4 py-4 text-sm leading-7 text-slate-200">
-                      <TypewriterText
-                        text={liveNarration || 'I will stay in single-column mode until I have enough to build a reliable first draft.'}
-                        animate={isStreaming}
-                      />
-                    </div>
+                    {liveNarration ? (
+                      <div className="rounded-[20px] border border-slate-800 bg-slate-900/70 px-4 py-4 text-sm leading-7 text-slate-200">
+                        <TypewriterText text={liveNarration} animate={isStreaming} />
+                      </div>
+                    ) : null}
 
                     {messages.map((message, index) => (
                       <article

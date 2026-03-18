@@ -44,8 +44,8 @@ Why this direction:
 - React is the fastest route to a polished split-panel product experience
 - Vite keeps the frontend simple and avoids overlapping backend concerns with FastAPI
 - In-memory session state is enough for an interview build while keeping the architecture clean
-- A code-led planner is easier to adapt incrementally than handing the full itinerary over to a model each turn
-- Claude is used where it adds the most value: extracting intent, asking better questions, and warming up the final copy
+- Claude is used where it adds the most value: extracting intent, asking better questions, drafting the itinerary, and warming up the final copy
+- Code still provides soft guardrails, quality checks, selective reruns, and repair passes so the plan stays stable
 
 ## Target Architecture
 
@@ -106,7 +106,9 @@ The repository now has:
 - a structured `PlanningBrief` stored in session state
 - a lead-agent orchestration loop that decides whether to ask, gather, adapt, or plan
 - parallel real-data gathering for weather, hotels, restaurants, and experiences
-- a code-led day planner that can be selectively rerun when user preferences change
+- a Claude-led planning layer that drafts day-by-day structure from real tool context
+- a quality rubric plus verify/repair pass before the final itinerary is shown
+- selective reruns when user preferences change, instead of rebuilding everything
 - Claude-assisted copy polish for warmer, more human itinerary language
 
 The highest-value remaining work is itinerary quality, UI polish, and stronger selective adaptation for more change types.
@@ -121,9 +123,10 @@ Vela now plans in three stages:
    - Ask only the missing questions, using concrete examples and options
 2. Parallel gather
    - Once the brief is ready, gather weather, hotels, restaurants, and experiences in parallel
-3. Compose and adapt
-   - Build the itinerary structure in code
-   - Let Claude polish the wording
+3. Compose, verify, and adapt
+   - Let Claude draft the itinerary structure from the gathered venue set
+   - Run a quality rubric to check coverage, geography, pace, duplication, and interest fit
+   - Repair the draft if needed before showing it
    - When the user changes budget, pace, neighborhood, or priorities, selectively rerun only the affected tools
 
 ### Minimum information before opening the canvas

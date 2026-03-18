@@ -126,21 +126,65 @@ class AgentOrchestrator:
                     except Exception as exc:  # pragma: no cover - defensive path
                         yield AgentEvent(type="tool_completed", tool_name=tool_name, payload={"error": str(exc)})
 
+        planning_context = self._prepare_candidate_context(brief, tool_payloads, state.last_itinerary)
         daily_input = self._build_daily_structure_input(
             brief,
             tool_payloads,
             state.last_itinerary,
             patch.day_swap_request,
+            planning_context,
         )
         tool_inputs["get_daily_structure"] = daily_input.model_dump(mode="json")
         yield AgentEvent(type="tool_started", tool_name="get_daily_structure", message="Running get_daily_structure")
-        day_output = run_tool("get_daily_structure", tool_inputs["get_daily_structure"])
+        generated_days = self._generate_daily_structure_with_claude(
+            response_language=response_language,
+            brief=brief,
+            daily_input=daily_input,
+            planning_context=planning_context,
+            weather_payload=tool_payloads.get("get_weather"),
+        )
+        if generated_days:
+            day_output = [day.model_dump(mode="json") for day in generated_days]
+        else:
+            day_output = run_tool("get_daily_structure", tool_inputs["get_daily_structure"])
         tool_payloads["get_daily_structure"] = day_output
         yield AgentEvent(type="tool_completed", tool_name="get_daily_structure", payload=day_output)
 
         itinerary = self._build_itinerary(tool_inputs, tool_payloads, state.last_itinerary)
         if itinerary and patch.day_swap_request:
             itinerary = self._apply_day_swap_request(itinerary, patch.day_swap_request)
+        if itinerary:
+            verification = self._verify_itinerary_quality(brief, itinerary, response_language)
+            if not verification["approved"]:
+                yield AgentEvent(
+                    type="assistant_message",
+                    message=(
+                        "我在把这版行程再收紧一点，让它更有节奏也更少重复。"
+                        if response_language == "zh"
+                        else "I am tightening this draft so it feels more coherent, less repetitive, and more useful."
+                    ),
+                )
+                repaired_days = self._repair_daily_structure_with_claude(
+                    response_language=response_language,
+                    brief=brief,
+                    itinerary=itinerary,
+                    planning_context=planning_context,
+                    issues=verification["issues"],
+                )
+                if repaired_days:
+                    repaired_itinerary = itinerary.model_copy(
+                        update={
+                            "days": self._enrich_days(
+                                repaired_days,
+                                planning_context["selected_hotel"],
+                                planning_context["restaurants"],
+                                planning_context["experiences"],
+                            )
+                        }
+                    )
+                    repaired_verification = self._verify_itinerary_quality(brief, repaired_itinerary, response_language)
+                    if self._issue_score(repaired_verification["issues"]) <= self._issue_score(verification["issues"]):
+                        itinerary = repaired_itinerary
         if itinerary:
             itinerary = self._polish_itinerary_days(brief, itinerary)
 
@@ -206,7 +250,50 @@ class AgentOrchestrator:
         )
         text = self._extract_text(self._normalize_blocks(response.content))
         payload = self._parse_json_block(text)
-        return PlanningBriefPatch.model_validate(payload)
+        patch = PlanningBriefPatch.model_validate(payload)
+        return self._supplement_patch_from_text(existing_brief, patch, user_message)
+
+    def _supplement_patch_from_text(
+        self,
+        existing_brief: PlanningBrief,
+        patch: PlanningBriefPatch,
+        user_message: str,
+    ) -> PlanningBriefPatch:
+        patch_data = patch.model_dump(exclude_none=True)
+        normalized_text = user_message.strip()
+        lower_text = normalized_text.lower()
+
+        if not existing_brief.trip_length_days and patch.trip_length_days is None:
+            trip_length = self._extract_trip_length(normalized_text)
+            if trip_length:
+                patch_data["trip_length_days"] = trip_length
+
+        if not existing_brief.travel_party and patch.travel_party is None:
+            travel_party = self._extract_travel_party(lower_text)
+            if travel_party:
+                patch_data["travel_party"] = travel_party
+
+        if not existing_brief.destination and patch.destination is None:
+            destination = self._extract_destination(normalized_text)
+            if destination:
+                patch_data["destination"] = destination
+
+        if not existing_brief.dates_or_month and patch.dates_or_month is None:
+            dates_or_month = self._extract_dates_or_month(normalized_text)
+            if dates_or_month:
+                patch_data["dates_or_month"] = dates_or_month
+
+        if not existing_brief.budget and patch.budget is None:
+            budget = self._extract_budget(lower_text)
+            if budget:
+                patch_data["budget"] = budget
+
+        if not existing_brief.constraints and not existing_brief.constraints_confirmed:
+            if patch.constraints is None and patch.constraints_confirmed is None:
+                if any(token in lower_text for token in ("no special restrictions", "no restrictions", "没有特别限制", "没有限制")):
+                    patch_data["constraints_confirmed"] = True
+
+        return PlanningBriefPatch.model_validate(patch_data)
 
     def _parse_json_block(self, text: str) -> dict[str, Any]:
         cleaned = text.strip()
@@ -241,15 +328,73 @@ class AgentOrchestrator:
         return missing
 
     def _build_clarifying_reply(self, response_language: str, brief: PlanningBrief, missing_fields: list[str]) -> str:
+        generated = self._generate_clarifying_reply_with_claude(response_language, brief, missing_fields)
+        if generated:
+            return generated
         if response_language == "zh":
             return self._build_clarifying_reply_zh(brief, missing_fields)
         return self._build_clarifying_reply_en(brief, missing_fields)
 
+    def _generate_clarifying_reply_with_claude(
+        self,
+        response_language: str,
+        brief: PlanningBrief,
+        missing_fields: list[str],
+    ) -> str | None:
+        field_guidance = {
+            "destination": "Ask which city or destination they want to go to.",
+            "dates_or_month": "Ask when they are going. Give examples like next Friday, late January, or mid April.",
+            "trip_length_days": "Ask how many days they have for the trip.",
+            "travel_party": "Ask whether this is solo, couple, friends, or family travel.",
+            "budget": "Ask whether the budget is budget, mid-range, or premium, or invite a rough amount.",
+            "priorities": "Ask for the top 2 to 3 goals, such as food, art, classic landmarks, shopping, nightlife, or hidden gems.",
+            "constraints": "Ask whether there are any constraints or things to avoid, such as dietary restrictions, mobility needs, long queues, or overly packed days.",
+        }
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=500,
+                system=(
+                    "You write a warm, concise clarifying message for a travel-planning assistant.\n"
+                    "Reply in plain text only.\n"
+                    f"Write in {'Chinese' if response_language == 'zh' else 'English'}.\n"
+                    "Rules:\n"
+                    "- Ask only for the fields listed as missing.\n"
+                    "- Do not repeat information the user already gave.\n"
+                    "- Ask at most 4 bullet points.\n"
+                    "- Each bullet must be concrete and easy to answer.\n"
+                    "- Prefer examples or simple choices over abstract wording.\n"
+                    "- Sound warm, calm, and helpful.\n"
+                    "- End with one short sentence saying the user can answer in order or just reply with what they know.\n"
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "known_brief": brief.model_dump(mode="json"),
+                                "missing_fields": missing_fields,
+                                "field_guidance": {field: field_guidance[field] for field in missing_fields if field in field_guidance},
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            )
+            text = self._extract_text(self._normalize_blocks(response.content)).strip()
+            return text or None
+        except Exception:  # pragma: no cover - graceful fallback
+            return None
+
     def _build_clarifying_reply_zh(self, brief: PlanningBrief, missing_fields: list[str]) -> str:
         questions: list[str] = []
 
-        if any(field in missing_fields for field in ("destination", "dates_or_month", "trip_length_days")):
-            questions.append("先告诉我这次要去哪里、什么时候去，以及准备玩几天。比如“巴黎，1月底，3天”。")
+        if "destination" in missing_fields:
+            questions.append("先告诉我要去哪个城市。比如“巴黎”或“东京”。")
+        if "dates_or_month" in missing_fields:
+            questions.append("你准备什么时候去？比如“下周五”、“1月底”或“4月中旬”。")
+        if "trip_length_days" in missing_fields:
+            questions.append("这次准备玩几天？比如“3天”或“5天”。")
         if "travel_party" in missing_fields:
             questions.append("这次是一个人、情侣、朋友还是家庭出行？这会直接影响节奏和住宿选择。")
         if "budget" in missing_fields:
@@ -266,8 +411,12 @@ class AgentOrchestrator:
     def _build_clarifying_reply_en(self, brief: PlanningBrief, missing_fields: list[str]) -> str:
         questions: list[str] = []
 
-        if any(field in missing_fields for field in ("destination", "dates_or_month", "trip_length_days")):
-            questions.append("First, tell me where you're going, when you're going, and how many days you have. For example: \"Paris, late January, 3 days.\"")
+        if "destination" in missing_fields:
+            questions.append('First, tell me which city you want to go to. For example: "Paris" or "Tokyo."')
+        if "dates_or_month" in missing_fields:
+            questions.append('When are you going? For example: "next Friday," "late January," or "mid April."')
+        if "trip_length_days" in missing_fields:
+            questions.append('How many days do you have for this trip? For example: "3 days" or "5 days."')
         if "travel_party" in missing_fields:
             questions.append("Who is this trip for: solo, couple, friends, or family? That changes pacing and hotel choices.")
         if "budget" in missing_fields:
@@ -408,18 +557,14 @@ class AgentOrchestrator:
         tool_payloads: dict[str, Any],
         previous: ItineraryDraft | None,
         day_swap_request: str | None = None,
+        planning_context: dict[str, Any] | None = None,
     ) -> DailyStructureInput:
-        hotels = [HotelOption.model_validate(item) for item in tool_payloads.get("get_hotels", [])]
-        restaurants = [RestaurantOption.model_validate(item) for item in tool_payloads.get("get_restaurants", [])]
-        experiences = [ExperienceOption.model_validate(item) for item in tool_payloads.get("get_experiences", [])]
-
-        ranked_hotels = sorted(hotels, key=lambda hotel: self._score_hotel(hotel, brief), reverse=True)
-        ranked_restaurants = sorted(restaurants, key=lambda restaurant: self._score_restaurant(restaurant, brief), reverse=True)
-        ranked_experiences = sorted(experiences, key=lambda experience: self._score_experience(experience, brief), reverse=True)
-
-        selected_hotel = ranked_hotels[0] if ranked_hotels else (previous.selected_hotel if previous else None)
-        restaurant_names = [restaurant.name for restaurant in ranked_restaurants[: max(brief.trip_length_days or 1, 3)]]
-        experience_names = [experience.name for experience in ranked_experiences[: max(brief.trip_length_days or 1, 3)]]
+        context = planning_context or self._prepare_candidate_context(brief, tool_payloads, previous)
+        selected_hotel = context["selected_hotel"]
+        ranked_restaurants = context["ranked_restaurants"]
+        ranked_experiences = context["ranked_experiences"]
+        restaurant_names = [restaurant.name for restaurant in ranked_restaurants[: max((brief.trip_length_days or 1) + 2, 5)]]
+        experience_names = [experience.name for experience in ranked_experiences[: max(brief.trip_length_days or 1, 4)]]
 
         return DailyStructureInput(
             destination=brief.destination or "",
@@ -437,6 +582,40 @@ class AgentOrchestrator:
             must_avoid=brief.must_avoid,
             day_swap_request=day_swap_request,
         )
+
+    def _prepare_candidate_context(
+        self,
+        brief: PlanningBrief,
+        tool_payloads: dict[str, Any],
+        previous: ItineraryDraft | None,
+    ) -> dict[str, Any]:
+        hotels = [HotelOption.model_validate(item) for item in tool_payloads.get("get_hotels", [])]
+        if not hotels and previous:
+            hotels = previous.hotels
+
+        restaurants = [RestaurantOption.model_validate(item) for item in tool_payloads.get("get_restaurants", [])]
+        if not restaurants and previous:
+            restaurants = previous.restaurants
+
+        experiences = [ExperienceOption.model_validate(item) for item in tool_payloads.get("get_experiences", [])]
+        if not experiences and previous:
+            experiences = previous.experiences
+
+        ranked_hotels = sorted(hotels, key=lambda hotel: self._score_hotel(hotel, brief), reverse=True)
+        ranked_restaurants = sorted(restaurants, key=lambda restaurant: self._score_restaurant(restaurant, brief), reverse=True)
+        ranked_experiences = sorted(experiences, key=lambda experience: self._score_experience(experience, brief), reverse=True)
+
+        selected_hotel = ranked_hotels[0] if ranked_hotels else (previous.selected_hotel if previous else None)
+
+        return {
+            "hotels": hotels,
+            "restaurants": restaurants,
+            "experiences": experiences,
+            "ranked_hotels": ranked_hotels,
+            "ranked_restaurants": ranked_restaurants,
+            "ranked_experiences": ranked_experiences,
+            "selected_hotel": selected_hotel,
+        }
 
     def _score_hotel(self, hotel: HotelOption, brief: PlanningBrief) -> int:
         score = 0
@@ -494,6 +673,280 @@ class AgentOrchestrator:
 
     def _normalize_text(self, value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s]+", " ", value.lower())).strip()
+
+    def _generate_daily_structure_with_claude(
+        self,
+        response_language: str,
+        brief: PlanningBrief,
+        daily_input: DailyStructureInput,
+        planning_context: dict[str, Any],
+        weather_payload: Any,
+    ) -> list[DayPlan] | None:
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1800,
+                system=(
+                    f"{self.system_prompt}\n\n"
+                    "You are the planning brain for Vela.\n"
+                    "Use the provided venues and trip brief to create a strong, structured multi-day itinerary.\n"
+                    "Return JSON only with this shape: "
+                    '{"days":[{"day_number":1,"theme":"...","summary":"...","items":[{"time_label":"Morning","kind":"experience","title":"...","neighborhood":"...","description":"..."}]}]}.\n'
+                    "Rules:\n"
+                    "- Use only venues provided in the candidate lists.\n"
+                    "- Minimize repeats. Avoid reusing the same restaurant or experience unless the shortlist is too small.\n"
+                    "- Keep each day geographically sensible.\n"
+                    "- Day 1 should be lighter and include the hotel plus one nearby meal.\n"
+                    "- Full days should usually include a morning anchor, lunch, one afternoon or evening anchor, and dinner when appropriate.\n"
+                    "- If the brief emphasizes hidden gems or local feel, include at least one less-obvious venue or quieter neighborhood choice.\n"
+                    "- Respect must_do and must_avoid.\n"
+                    f"- Write in {'Chinese' if response_language == 'zh' else 'English'}.\n"
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "planning_brief": brief.model_dump(mode="json"),
+                                "weather": weather_payload,
+                                "selected_hotel": planning_context["selected_hotel"].model_dump(mode="json") if planning_context["selected_hotel"] else None,
+                                "candidate_hotels": [hotel.model_dump(mode="json") for hotel in planning_context["ranked_hotels"][:3]],
+                                "candidate_restaurants": [restaurant.model_dump(mode="json") for restaurant in planning_context["ranked_restaurants"][:8]],
+                                "candidate_experiences": [experience.model_dump(mode="json") for experience in planning_context["ranked_experiences"][:8]],
+                                "daily_input": daily_input.model_dump(mode="json"),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            )
+            text = self._extract_text(self._normalize_blocks(response.content))
+            payload = self._parse_json_block(text)
+            days = [DayPlan.model_validate(day) for day in payload.get("days", [])]
+            return days or None
+        except Exception:  # pragma: no cover - graceful fallback
+            return None
+
+    def _verify_itinerary_quality(
+        self,
+        brief: PlanningBrief,
+        itinerary: ItineraryDraft,
+        response_language: str,
+    ) -> dict[str, Any]:
+        code_issues = self._code_quality_findings(brief, itinerary)
+        llm_issues: list[dict[str, Any]] = []
+
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=700,
+                system=(
+                    "You verify itinerary quality against a rubric.\n"
+                    "Return JSON only with shape: "
+                    '{"approved":true,"issues":[{"code":"...","severity":1,"message":"...","repair_hint":"..."}]}.\n'
+                    "Severity: 1=minor, 2=meaningful, 3=serious.\n"
+                    "Rubric:\n"
+                    "- coverage: each day should feel complete enough to use\n"
+                    "- diversity: avoid repeating the same venues too often\n"
+                    "- geography: keep each day reasonably clustered\n"
+                    "- pace: match the requested pace\n"
+                    "- interest_fit: the plan should clearly reflect the traveller's goals\n"
+                    "- constraints_fit: avoid must_avoid and respect constraints\n"
+                    "- memorability: include at least one or two notable anchors\n"
+                    f"- Write issue messages in {'Chinese' if response_language == 'zh' else 'English'}.\n"
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "planning_brief": brief.model_dump(mode="json"),
+                                "code_findings": code_issues,
+                                "itinerary": itinerary.model_dump(mode="json"),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            )
+            text = self._extract_text(self._normalize_blocks(response.content))
+            payload = self._parse_json_block(text)
+            llm_issues = [self._normalize_issue(issue) for issue in payload.get("issues", [])]
+        except Exception:  # pragma: no cover - graceful fallback
+            llm_issues = []
+
+        merged_issues = code_issues + llm_issues
+        return {
+            "approved": self._issue_score(merged_issues) <= 2,
+            "issues": merged_issues,
+        }
+
+    def _code_quality_findings(self, brief: PlanningBrief, itinerary: ItineraryDraft) -> list[dict[str, Any]]:
+        issues: list[dict[str, Any]] = []
+        seen_titles: dict[str, int] = {}
+
+        for day in itinerary.days:
+            real_items = [item for item in day.items if item.kind != "note"]
+            unique_neighborhoods = {item.neighborhood for item in real_items if item.neighborhood}
+            restaurants = [item for item in real_items if item.kind == "restaurant"]
+            experiences = [item for item in real_items if item.kind == "experience"]
+
+            minimum_items = 2 if day.day_number == 1 else 3
+            if len(real_items) < minimum_items:
+                issues.append(
+                    {
+                        "code": f"coverage_day_{day.day_number}",
+                        "severity": 2,
+                        "message": f"Day {day.day_number} feels too thin to be genuinely useful.",
+                        "repair_hint": "Add another meaningful stop or meal anchor to make the day feel complete.",
+                    }
+                )
+
+            if len(unique_neighborhoods) > 3:
+                issues.append(
+                    {
+                        "code": f"geography_day_{day.day_number}",
+                        "severity": 2,
+                        "message": f"Day {day.day_number} spans too many neighborhoods and may feel scattered.",
+                        "repair_hint": "Tighten the route so the day clusters around one or two areas.",
+                    }
+                )
+
+            if day.day_number > 1 and not restaurants:
+                issues.append(
+                    {
+                        "code": f"dining_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} lacks a clear dining anchor.",
+                        "repair_hint": "Add at least one restaurant stop that fits the day's area and mood.",
+                    }
+                )
+
+            if day.day_number > 1 and not experiences:
+                issues.append(
+                    {
+                        "code": f"experience_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} lacks a clear experiential anchor.",
+                        "repair_hint": "Add a museum, walk, neighborhood activity, or other notable experience.",
+                    }
+                )
+
+            if (brief.pace or "balanced") == "slow" and len(real_items) > 4:
+                issues.append(
+                    {
+                        "code": f"pace_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} looks too packed for a slow-paced trip.",
+                        "repair_hint": "Remove one stop or keep more breathing room.",
+                    }
+                )
+
+            if (brief.pace or "balanced") == "packed" and len(real_items) < 4 and day.day_number > 1:
+                issues.append(
+                    {
+                        "code": f"pace_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} may feel too light for a packed trip.",
+                        "repair_hint": "Add one more worthwhile anchor if it still feels geographically sensible.",
+                    }
+                )
+
+            for item in real_items:
+                key = item.title.lower()
+                seen_titles[key] = seen_titles.get(key, 0) + 1
+
+        for title, count in seen_titles.items():
+            if count > 1:
+                issues.append(
+                    {
+                        "code": f"duplicate_{title}",
+                        "severity": 2,
+                        "message": f'"{title}" appears too many times across the trip.',
+                        "repair_hint": "Replace repeated venues with other strong options from the shortlist.",
+                    }
+                )
+
+        if any(token in " ".join(brief.priorities + brief.style_notes).lower() for token in ("hidden", "local", "gem")):
+            joined_text = " ".join(
+                [day.theme + " " + day.summary + " " + " ".join(item.description for item in day.items) for day in itinerary.days]
+            ).lower()
+            if not any(token in joined_text for token in ("hidden", "local", "quiet", "independent", "neighborhood")):
+                issues.append(
+                    {
+                        "code": "hidden_gem_signal",
+                        "severity": 2,
+                        "message": "The itinerary does not clearly deliver on the hidden-gem or local feel the traveller asked for.",
+                        "repair_hint": "Swap at least one mainstream stop for a more local or less obvious choice.",
+                    }
+                )
+
+        return issues
+
+    def _normalize_issue(self, issue: dict[str, Any]) -> dict[str, Any]:
+        severity = issue.get("severity", 1)
+        try:
+            severity = int(severity)
+        except Exception:
+            severity = 1
+        severity = max(1, min(severity, 3))
+        return {
+            "code": issue.get("code", "quality_issue"),
+            "severity": severity,
+            "message": issue.get("message", ""),
+            "repair_hint": issue.get("repair_hint", ""),
+        }
+
+    def _issue_score(self, issues: list[dict[str, Any]]) -> int:
+        return sum(int(issue.get("severity", 1)) for issue in issues)
+
+    def _repair_daily_structure_with_claude(
+        self,
+        response_language: str,
+        brief: PlanningBrief,
+        itinerary: ItineraryDraft,
+        planning_context: dict[str, Any],
+        issues: list[dict[str, Any]],
+    ) -> list[DayPlan] | None:
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=1800,
+                system=(
+                    f"{self.system_prompt}\n\n"
+                    "You are repairing an itinerary draft.\n"
+                    "Return JSON only with the full repaired days array using the same shape as before.\n"
+                    "Keep the plan recognizable, but fix the issues.\n"
+                    "Use only the provided venue candidates.\n"
+                    "- Reduce repetition.\n"
+                    "- Improve day coverage.\n"
+                    "- Tighten geography.\n"
+                    "- Match the requested pace.\n"
+                    f"- Write in {'Chinese' if response_language == 'zh' else 'English'}.\n"
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "planning_brief": brief.model_dump(mode="json"),
+                                "issues": issues,
+                                "current_days": [day.model_dump(mode="json") for day in itinerary.days],
+                                "selected_hotel": planning_context["selected_hotel"].model_dump(mode="json") if planning_context["selected_hotel"] else None,
+                                "candidate_restaurants": [restaurant.model_dump(mode="json") for restaurant in planning_context["ranked_restaurants"][:8]],
+                                "candidate_experiences": [experience.model_dump(mode="json") for experience in planning_context["ranked_experiences"][:8]],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            )
+            text = self._extract_text(self._normalize_blocks(response.content))
+            payload = self._parse_json_block(text)
+            days = [DayPlan.model_validate(day) for day in payload.get("days", [])]
+            return days or None
+        except Exception:  # pragma: no cover - graceful fallback
+            return None
 
     def _build_itinerary(
         self,
@@ -803,3 +1256,74 @@ class AgentOrchestrator:
         if re.search(r"[\u4e00-\u9fff]", user_text):
             return "zh"
         return "en"
+
+    def _extract_trip_length(self, user_text: str) -> int | None:
+        match = re.search(r"(\d+)\s*(?:days?|天|晚)", user_text, re.IGNORECASE)
+        if not match:
+            return None
+        value = int(match.group(1))
+        return value if 1 <= value <= 14 else None
+
+    def _extract_travel_party(self, lower_text: str) -> str | None:
+        if any(token in lower_text for token in ("solo", "alone", "by myself", "single traveler", "单人", "一个人", "自己")):
+            return "solo"
+        if any(token in lower_text for token in ("couple", "romantic", "两个人", "情侣")):
+            return "couple"
+        if any(token in lower_text for token in ("family", "kids", "children", "家庭", "带娃", "带孩子")):
+            return "family"
+        if any(token in lower_text for token in ("friends", "with friends", "朋友")):
+            return "friends"
+        return None
+
+    def _extract_destination(self, user_text: str) -> str | None:
+        english_patterns = [
+            r"(?:go to|trip to|visit|visiting|travel to)\s+([a-zA-Z][a-zA-Z\s'&.-]{1,40}?)(?:\s+(?:for|next|this|in|on|with|alone|as|,|$))",
+            r"(?:in)\s+([A-Z][a-zA-Z\s'&.-]{1,40}?)(?:\s+(?:for|next|this|on|with|alone|,|$))",
+        ]
+        for pattern in english_patterns:
+            match = re.search(pattern, user_text, re.IGNORECASE)
+            if match:
+                destination = match.group(1).strip(" ,.")
+                if destination:
+                    return destination.title()
+
+        chinese_match = re.search(r"(?:去|到)([\u4e00-\u9fffA-Za-z]{2,20})", user_text)
+        if chinese_match:
+            destination = chinese_match.group(1).strip("，。,. ")
+            if destination.startswith("巴黎") and "伦敦" in destination:
+                return "Paris"
+            return destination
+        return None
+
+    def _extract_dates_or_month(self, user_text: str) -> str | None:
+        english_match = re.search(
+            r"(next\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|weekend)|"
+            r"this\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend)|"
+            r"(?:late|mid|early)\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)|"
+            r"(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\s+\d{1,2})?)",
+            user_text,
+            re.IGNORECASE,
+        )
+        if english_match:
+            return english_match.group(1)
+
+        chinese_match = re.search(r"(下周[一二三四五六日天]?|本周[一二三四五六日天]?|[0-9一二三四五六七八九十]+月(?:底|初|中旬|中)?|明年[0-9一二三四五六七八九十]+月)", user_text)
+        if chinese_match:
+            return chinese_match.group(1)
+        return None
+
+    def _extract_budget(self, lower_text: str) -> str | None:
+        if any(token in lower_text for token in ("budget", "cheap", "省钱", "便宜")):
+            return "budget"
+        if any(token in lower_text for token in ("luxury", "premium", "high-end", "奢华", "高端")):
+            return "luxury"
+
+        amount_match = re.search(r"(\d[\d,\.]*)\s*(?:gbp|pounds?|usd|dollars?|eur|euros?|英镑|美元|欧元)", lower_text)
+        if not amount_match:
+            return None
+        amount = float(amount_match.group(1).replace(",", ""))
+        if amount < 800:
+            return "budget"
+        if amount > 2500:
+            return "luxury"
+        return "mid"
