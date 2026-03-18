@@ -27,10 +27,12 @@ from src.agent.composer import (
     verify_itinerary_quality,
 )
 from src.agent.intake import (
+    apply_smart_defaults,
     build_clarifying_reply,
     extract_brief_patch,
     merge_brief,
-    missing_fields,
+    missing_essential_fields,
+    missing_nice_to_have_fields,
 )
 from src.agent.llm_helpers import normalize_blocks
 from src.agent.preference_update import build_planning_preface, detect_changed_fields
@@ -91,18 +93,19 @@ class AgentOrchestrator:
 
         yield AgentEvent(type="session", payload={"session_id": state.session_id})
 
-        # ── Phase 1: Intake ──────────────────────────────────────────
+        # ── Phase 1: Intake (lean — only block on essentials) ────────
         previous_brief = state.planning_brief.model_copy(deep=True)
         patch = extract_brief_patch(
             self.client, self.model, previous_brief, user_text, state.last_itinerary
         )
         brief = merge_brief(previous_brief, patch)
-        state.planning_brief = brief
 
-        missing = missing_fields(brief)
-        if missing:
-            reply = build_clarifying_reply(self.client, self.model, brief, missing)
+        # Only block if we don't even know WHERE or HOW LONG
+        essential_missing = missing_essential_fields(brief)
+        if essential_missing:
+            reply = build_clarifying_reply(self.client, self.model, brief, essential_missing)
             messages.append({"role": "assistant", "content": reply})
+            state.planning_brief = brief
             state.messages = messages
             state.workspace_ready = False
             yield AgentEvent(type="assistant_message", message=reply)
@@ -113,11 +116,15 @@ class AgentOrchestrator:
                     "reply": reply,
                     "itinerary": state.last_itinerary.model_dump(mode="json") if state.last_itinerary else None,
                     "workspace_ready": False,
-                    "missing_fields": missing,
+                    "missing_fields": essential_missing,
                     "planning_brief": brief.model_dump(mode="json"),
                 },
             )
             return
+
+        # Fill smart defaults for anything the user didn't mention
+        brief = apply_smart_defaults(brief)
+        state.planning_brief = brief
 
         # ── Phase 2: Detect changes & plan ───────────────────────────
         changed_fields = detect_changed_fields(previous_brief, brief, patch)

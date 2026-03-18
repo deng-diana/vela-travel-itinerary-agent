@@ -17,15 +17,24 @@ from src.tools.schemas import ItineraryDraft, PlanningBrief, PlanningBriefPatch
 # Required brief fields
 # ---------------------------------------------------------------------------
 
-REQUIRED_BRIEF_FIELDS = (
-    "destination",
+# Fields we truly need before planning can start (bare minimum).
+ESSENTIAL_FIELDS = ("destination", "trip_length_days")
+
+# Nice-to-have fields: we ask once, but proceed with smart defaults if missing.
+NICE_TO_HAVE_FIELDS = (
     "dates_or_month",
-    "trip_length_days",
     "travel_party",
     "budget",
     "priorities",
     "constraints_confirmed",
 )
+
+# Smart defaults applied when user doesn't provide nice-to-have info
+SMART_DEFAULTS: dict[str, Any] = {
+    "travel_party": "solo",
+    "budget": "mid",
+    "pace": "balanced",
+}
 
 # ---------------------------------------------------------------------------
 # Core intake functions
@@ -144,24 +153,37 @@ def merge_brief(existing: PlanningBrief, patch: PlanningBriefPatch) -> PlanningB
     return PlanningBrief.model_validate(merged)
 
 
-def missing_fields(brief: PlanningBrief) -> list[str]:
-    """Check which required fields are still missing from the brief."""
+def missing_essential_fields(brief: PlanningBrief) -> list[str]:
+    """Check which essential (blocking) fields are still missing."""
     missing: list[str] = []
     if not brief.destination:
         missing.append("destination")
-    if not brief.dates_or_month:
-        missing.append("dates_or_month")
     if not brief.trip_length_days:
         missing.append("trip_length_days")
+    return missing
+
+
+def missing_nice_to_have_fields(brief: PlanningBrief) -> list[str]:
+    """Check which nice-to-have fields are still missing (non-blocking)."""
+    missing: list[str] = []
+    if not brief.dates_or_month:
+        missing.append("dates_or_month")
     if not brief.travel_party:
         missing.append("travel_party")
     if not brief.budget:
         missing.append("budget")
     if not brief.priorities:
         missing.append("priorities")
-    if not brief.constraints_confirmed and not brief.constraints and not brief.dietary_preferences:
-        missing.append("constraints")
     return missing
+
+
+def apply_smart_defaults(brief: PlanningBrief) -> PlanningBrief:
+    """Fill in sensible defaults for missing non-essential fields."""
+    data = brief.model_dump(mode="python")
+    for field, default in SMART_DEFAULTS.items():
+        if not data.get(field):
+            data[field] = default
+    return PlanningBrief.model_validate(data)
 
 
 def build_clarifying_reply(
@@ -190,30 +212,23 @@ def _generate_clarifying_reply_with_claude(
 ) -> str | None:
     """Ask Claude to write a warm clarifying message; returns None on failure."""
     field_guidance = {
-        "destination": "Ask which city or destination they want to go to.",
-        "dates_or_month": "Ask when they are going. Give examples like next Friday, late January, or mid April.",
+        "destination": "Ask which city or region they'd like to visit.",
         "trip_length_days": "Ask how many days they have for the trip.",
-        "travel_party": "Ask whether this is solo, couple, friends, or family travel.",
-        "budget": "Ask whether the budget is budget, mid-range, or premium, or invite a rough amount.",
-        "priorities": "Ask for the top 2 to 3 goals, such as food, art, classic landmarks, shopping, nightlife, or hidden gems.",
-        "constraints": "Ask whether there are any constraints or things to avoid, such as dietary restrictions, mobility needs, long queues, or overly packed days.",
     }
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=500,
+            max_tokens=300,
             system=(
-                "You write a warm, concise clarifying message for a travel-planning assistant.\n"
+                "You write a very short, warm clarifying message for a travel-planning assistant.\n"
                 "Reply in plain text only.\n"
                 "Reply in the same language the user is writing in.\n"
                 "Rules:\n"
-                "- Ask only for the fields listed as missing.\n"
-                "- Do not repeat information the user already gave.\n"
-                "- Ask at most 4 bullet points.\n"
-                "- Each bullet must be concrete and easy to answer.\n"
-                "- Prefer examples or simple choices over abstract wording.\n"
-                "- Sound warm, calm, and helpful.\n"
-                "- End with one short sentence saying the user can answer in order or just reply with what they know.\n"
+                "- Only ask for the ESSENTIAL missing fields listed (destination and/or trip length).\n"
+                "- Do NOT repeat any information the user already gave.\n"
+                "- Keep it to 1-2 short sentences max. No bullet lists.\n"
+                "- Sound warm, casual, and eager to start planning.\n"
+                "- Make it clear that once you know these basics, you'll start building immediately.\n"
             ),
             messages=[
                 {
@@ -241,26 +256,17 @@ def _generate_clarifying_reply_with_claude(
 
 
 def _build_clarifying_reply_fallback(brief: PlanningBrief, missing: list[str]) -> str:
-    questions: list[str] = []
-
+    parts: list[str] = []
     if "destination" in missing:
-        questions.append('First, tell me which city you want to go to. For example: "Paris" or "Tokyo."')
-    if "dates_or_month" in missing:
-        questions.append('When are you going? For example: "next Friday," "late January," or "mid April."')
+        parts.append("which city you'd like to visit")
     if "trip_length_days" in missing:
-        questions.append('How many days do you have for this trip? For example: "3 days" or "5 days."')
-    if "travel_party" in missing:
-        questions.append("Who is this trip for: solo, couple, friends, or family? That changes pacing and hotel choices.")
-    if "budget" in missing:
-        questions.append("Is your budget closer to budget, mid-range, or more premium? You can also give me a rough amount.")
-    if "priorities" in missing:
-        questions.append("What are the top 2 to 3 goals for this trip? For example: food, art, classic landmarks, shopping, nightlife, or hidden gems.")
-    if "constraints" in missing:
-        questions.append('Do you have anything I should avoid or plan around, like dietary restrictions, very packed days, long queues, or mobility needs? If not, just say "no special restrictions."')
+        parts.append("how many days you have")
 
-    opener = "I want to get the shape of this trip right before I build the first draft. I still need a few key details:"
-    closing = "You can answer in order, or just reply with the parts you already know."
-    return opener + "\n\n" + "\n".join(f"- {question}" for question in questions[:4]) + "\n\n" + closing
+    if not parts:
+        return "I have enough to get started — building your itinerary now!"
+
+    joined = " and ".join(parts)
+    return f"I'm almost ready to start planning! Just need to know {joined}, and I'll get right to it."
 
 
 # ---------------------------------------------------------------------------
