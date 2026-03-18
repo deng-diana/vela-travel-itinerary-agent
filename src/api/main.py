@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 
@@ -100,9 +101,10 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 
 @app.post("/plans/publish", response_model=PublishResponse)
-def plans_publish(request: PublishRequest) -> PublishResponse:
+def plans_publish(request: PublishRequest, req: Request) -> PublishResponse:
     slug = publish_plan(request.itinerary)
-    share_url = f"http://localhost:5173/?trip={slug}"
+    frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
+    share_url = f"{frontend_origin}/?trip={slug}"
     return PublishResponse(slug=slug, share_url=share_url)
 
 

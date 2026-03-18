@@ -96,6 +96,7 @@ def build_tool_input(
 
 def execute_tools_parallel(
     gather_specs: list[tuple[str, dict[str, Any]]],
+    timeout_seconds: float = 30.0,
 ) -> dict[str, tuple[str, Any]]:
     """Run gather-tools in parallel via *ThreadPoolExecutor*.
 
@@ -108,12 +109,17 @@ def execute_tools_parallel(
 
     with ThreadPoolExecutor(max_workers=min(4, len(gather_specs))) as executor:
         future_map = {executor.submit(run_tool, name, inp): name for name, inp in gather_specs}
-        for future in as_completed(future_map):
+        for future in as_completed(future_map, timeout=timeout_seconds):
             name = future_map[future]
             try:
                 results[name] = ("ok", future.result())
             except Exception as exc:
                 results[name] = ("error", str(exc))
+        # Mark any tools that didn't finish within the timeout
+        for future, name in future_map.items():
+            if name not in results:
+                future.cancel()
+                results[name] = ("error", f"Tool {name} timed out after {timeout_seconds}s")
     return results
 
 

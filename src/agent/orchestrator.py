@@ -10,8 +10,11 @@ Architecture: Lead Agent + Agentic Tool-Use Loop + Verify Loop
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from src.agent.composer import (
     align_days_to_candidates,
@@ -392,7 +395,7 @@ class AgentOrchestrator:
                     loop_messages.append({"role": "user", "content": tool_result_blocks})
 
         except Exception:  # pragma: no cover
-            pass
+            logger.exception("Agentic gather loop failed, falling back to deterministic plan")
 
         # Deterministic fallback: if the loop produced no base data, run standard plan
         base_tools = {"get_weather", "get_hotels", "get_restaurants", "get_experiences"}

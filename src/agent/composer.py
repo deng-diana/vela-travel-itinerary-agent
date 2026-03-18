@@ -596,13 +596,13 @@ def compose_final_reply(
     brief: PlanningBrief,
     itinerary: ItineraryDraft | None,
     changed_fields: set[str],
-) -> str:
+) -> tuple[str, dict[str, Any]]:
     """Generate a warm, concise final reply summarizing the itinerary."""
     if not itinerary:
         return (
             "I have enough to start. If you want, you can still tell me to slow the pace down, "
             "stay more centrally, or make the trip more food-focused."
-        )
+        ), {}
 
     response = client.messages.create(
         model=model,
