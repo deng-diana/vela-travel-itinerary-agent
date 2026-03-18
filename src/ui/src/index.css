@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Lora:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap");
 @import "tailwindcss";
 
 :root {
@@ -39,6 +39,15 @@ body {
     BlinkMacSystemFont,
     "Segoe UI",
     serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* UI labels, tags, and small text use Inter for clarity */
+.text-xs,
+.text-\[10px\],
+.text-\[11px\] {
+  font-family: "Inter", system-ui, sans-serif;
 }
 
 button {
@@ -46,10 +55,38 @@ button {
   cursor: pointer;
 }
 
+textarea {
+  font-family: "Inter", system-ui, sans-serif;
+}
+
 #root {
   min-height: 100vh;
 }
 
+/* Smooth transitions on all interactive cards */
+article {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+/* Custom scrollbar for a cleaner look */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(127, 145, 165, 0.25);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(127, 145, 165, 0.4);
+}
+
+/* Agent shimmer animation */
 .agent-shimmer {
   position: relative;
   overflow: hidden;
