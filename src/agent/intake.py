@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 from src.agent.llm_helpers import extract_text, normalize_blocks, parse_json_block
@@ -30,12 +31,6 @@ NICE_TO_HAVE_FIELDS = (
 )
 
 # Smart defaults applied when user doesn't provide nice-to-have info
-SMART_DEFAULTS: dict[str, Any] = {
-    "travel_party": "solo",
-    "budget": "mid",
-    "pace": "balanced",
-}
-
 # ---------------------------------------------------------------------------
 # Core intake functions
 # ---------------------------------------------------------------------------
@@ -174,13 +169,29 @@ def missing_nice_to_have_fields(brief: PlanningBrief) -> list[str]:
         missing.append("budget")
     if not brief.priorities:
         missing.append("priorities")
+    if not brief.constraints and not brief.constraints_confirmed:
+        missing.append("constraints")
     return missing
+
+
+def missing_landing_followup_fields(brief: PlanningBrief) -> list[str]:
+    """Collect the fields we want to cover in the single landing follow-up."""
+    return missing_essential_fields(brief) + [
+        field for field in missing_nice_to_have_fields(brief)
+        if field not in {"constraints_confirmed"}
+    ]
 
 
 def apply_smart_defaults(brief: PlanningBrief) -> PlanningBrief:
     """Fill in sensible defaults for missing non-essential fields."""
     data = brief.model_dump(mode="python")
-    for field, default in SMART_DEFAULTS.items():
+    smart_defaults = {
+        "dates_or_month": _default_dates_or_month(),
+        "travel_party": "solo",
+        "budget": "mid",
+        "pace": "balanced",
+    }
+    for field, default in smart_defaults.items():
         if not data.get(field):
             data[field] = default
     return PlanningBrief.model_validate(data)
@@ -197,6 +208,34 @@ def build_clarifying_reply(
     if generated:
         return generated
     return _build_clarifying_reply_fallback(brief, missing)
+
+
+def build_landing_followup_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
+    """Ask for all missing high-value trip details in one compact follow-up."""
+    joined = _join_field_labels(missing, user_message)
+    if _looks_like_chinese(user_message):
+        return (
+            f"我先把第一版行程搭起来前，再帮我补一下：{joined}。"
+            "你按现在知道的回复就行，我收到下一条就先开始规划。"
+        )
+    return (
+        f"Before I build the first draft, could you fill in {joined}? "
+        "Reply with whatever you know, and after your next message I'll start planning with what I have."
+    )
+
+
+def build_workspace_handoff_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
+    """Move the conversation into the workspace without staying stuck in landing."""
+    joined = _join_field_labels(missing, user_message)
+    if _looks_like_chinese(user_message):
+        return (
+            f"我先把工作区打开继续往下推进，不过在我真正排出路线前，还需要你补一下：{joined}。"
+            "你直接在左边继续回我，我一拿到这些信息就接着更新。"
+        )
+    return (
+        f"I've opened the workspace so we can keep moving, but I still need {joined} "
+        "before I can build a real itinerary. Reply here on the left and I'll update it as soon as I have that."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +306,47 @@ def _build_clarifying_reply_fallback(brief: PlanningBrief, missing: list[str]) -
 
     joined = " and ".join(parts)
     return f"I'm almost ready to start planning! Just need to know {joined}, and I'll get right to it."
+
+
+# ---------------------------------------------------------------------------
+# Field-label helpers
+# ---------------------------------------------------------------------------
+
+
+def _join_field_labels(fields: list[str], user_message: str) -> str:
+    labels = [_field_label(field, user_message) for field in fields]
+    if not labels:
+        return "a couple more trip details"
+    if len(labels) == 1:
+        return labels[0]
+    if _looks_like_chinese(user_message):
+        return "、".join(labels[:-1]) + f"和{labels[-1]}"
+    if len(labels) == 2:
+        return " and ".join(labels)
+    return ", ".join(labels[:-1]) + f", and {labels[-1]}"
+
+
+def _field_label(field: str, user_message: str) -> str:
+    chinese = _looks_like_chinese(user_message)
+    labels = {
+        "destination": ("想去哪里", "where you'd like to go"),
+        "trip_length_days": ("玩几天", "how many days you have"),
+        "dates_or_month": ("大概什么时候或几月", "rough dates or month"),
+        "travel_party": ("几个人一起去", "who's traveling"),
+        "budget": ("预算大概什么范围", "your budget range"),
+        "priorities": ("这趟最看重什么", "what matters most on this trip"),
+        "constraints": ("有没有要避开的限制或特殊需求", "any must-avoid constraints or special needs"),
+    }
+    zh_label, en_label = labels.get(field, ("补充偏好", "a missing trip detail"))
+    return zh_label if chinese else en_label
+
+
+def _looks_like_chinese(user_message: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in user_message)
+
+
+def _default_dates_or_month() -> str:
+    return datetime.now().strftime("%B")
 
 
 # ---------------------------------------------------------------------------

@@ -1,10 +1,5 @@
-from src.tools.mock_data import (
-    get_daily_structure,
-    get_experiences,
-    get_hotels,
-    get_restaurants,
-    get_weather,
-)
+from src.tools.live_daily_structure import get_daily_structure as get_live_daily_structure
+from src.tools.mock_data import get_daily_structure, get_experiences, get_hotels, get_restaurants, get_weather
 from src.tools.schemas import (
     DailyStructureInput,
     ExperienceSearchInput,
@@ -74,3 +69,52 @@ def test_get_daily_structure_builds_days():
     )
     assert len(days) == 3
     assert days[0].items
+
+
+def test_get_daily_structure_balanced_days_have_full_skeleton():
+    days = get_live_daily_structure(
+        DailyStructureInput(
+            destination="Tokyo",
+            month="August",
+            trip_length_days=3,
+            travel_party="couple",
+            budget="mid",
+            interests=["food", "hidden gems"],
+            hotel_name="Aoyama Terrace Hotel",
+            restaurant_names=["Aoyama Ember Counter", "Yanaka Lantern Izakaya", "Nakameguro River Soba"],
+            experience_names=[
+                "Tsukiji Side-Street Food Crawl",
+                "Yanaka Hidden Lanes Walk",
+                "Kiyosumi Coffee and Gallery Circuit",
+            ],
+            pace="balanced",
+        )
+    )
+
+    assert [item.kind for item in days[0].items][:2] == ["hotel", "restaurant"]
+    assert [item.time_label for item in days[1].items[:4]] == ["Morning", "Lunch", "Afternoon", "Dinner"]
+    assert [item.kind for item in days[1].items[:4]] == ["experience", "restaurant", "experience", "restaurant"]
+
+
+def test_get_daily_structure_packed_days_include_evening_anchor():
+    days = get_live_daily_structure(
+        DailyStructureInput(
+            destination="Tokyo",
+            month="August",
+            trip_length_days=2,
+            travel_party="solo",
+            budget="mid",
+            interests=["food", "culture"],
+            hotel_name="Aoyama Terrace Hotel",
+            restaurant_names=["Aoyama Ember Counter", "Yanaka Lantern Izakaya", "Nakameguro River Soba"],
+            experience_names=[
+                "Tsukiji Side-Street Food Crawl",
+                "Yanaka Hidden Lanes Walk",
+                "Kiyosumi Coffee and Gallery Circuit",
+                "Meiji Shrine Evening Reset",
+            ],
+            pace="packed",
+        )
+    )
+
+    assert any(item.time_label == "Evening" and item.kind == "experience" for item in days[0].items + days[1].items)

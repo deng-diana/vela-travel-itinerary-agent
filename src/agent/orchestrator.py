@@ -28,11 +28,13 @@ from src.agent.composer import (
 )
 from src.agent.intake import (
     apply_smart_defaults,
+    build_landing_followup_reply,
     build_clarifying_reply,
+    build_workspace_handoff_reply,
     extract_brief_patch,
     merge_brief,
+    missing_landing_followup_fields,
     missing_essential_fields,
-    missing_nice_to_have_fields,
 )
 from src.agent.llm_helpers import normalize_blocks
 from src.agent.preference_update import build_planning_preface, detect_changed_fields
@@ -100,14 +102,48 @@ class AgentOrchestrator:
         )
         brief = merge_brief(previous_brief, patch)
 
-        # Only block if we don't even know WHERE or HOW LONG
-        essential_missing = missing_essential_fields(brief)
-        if essential_missing:
-            reply = build_clarifying_reply(self.client, self.model, brief, essential_missing)
+        should_hold_landing = (
+            state.last_itinerary is None
+            and not state.workspace_ready
+            and not state.intake_followup_asked
+        )
+        landing_missing = missing_landing_followup_fields(brief)
+        if should_hold_landing and landing_missing:
+            reply = build_landing_followup_reply(brief, landing_missing, user_text)
             messages.append({"role": "assistant", "content": reply})
             state.planning_brief = brief
             state.messages = messages
             state.workspace_ready = False
+            state.intake_followup_asked = True
+            yield AgentEvent(type="assistant_message", message=reply)
+            yield AgentEvent(
+                type="final_response",
+                message=reply,
+                payload={
+                    "reply": reply,
+                    "itinerary": None,
+                    "workspace_ready": False,
+                    "missing_fields": landing_missing,
+                    "planning_brief": brief.model_dump(mode="json"),
+                },
+            )
+            return
+
+        brief = apply_smart_defaults(brief)
+        state.planning_brief = brief
+
+        essential_missing = missing_essential_fields(brief)
+        if essential_missing:
+            if state.intake_followup_asked and state.last_itinerary is None:
+                reply = build_workspace_handoff_reply(brief, essential_missing, user_text)
+                workspace_ready = True
+            else:
+                reply = build_clarifying_reply(self.client, self.model, brief, essential_missing)
+                workspace_ready = False
+            messages.append({"role": "assistant", "content": reply})
+            state.planning_brief = brief
+            state.messages = messages
+            state.workspace_ready = workspace_ready
             yield AgentEvent(type="assistant_message", message=reply)
             yield AgentEvent(
                 type="final_response",
@@ -115,16 +151,12 @@ class AgentOrchestrator:
                 payload={
                     "reply": reply,
                     "itinerary": state.last_itinerary.model_dump(mode="json") if state.last_itinerary else None,
-                    "workspace_ready": False,
+                    "workspace_ready": workspace_ready,
                     "missing_fields": essential_missing,
                     "planning_brief": brief.model_dump(mode="json"),
                 },
             )
             return
-
-        # Fill smart defaults for anything the user didn't mention
-        brief = apply_smart_defaults(brief)
-        state.planning_brief = brief
 
         # ── Phase 2: Detect changes & plan ───────────────────────────
         changed_fields = detect_changed_fields(previous_brief, brief, patch)

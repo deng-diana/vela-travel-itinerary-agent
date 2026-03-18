@@ -22,7 +22,7 @@ A traveller should be able to:
 
 1. Describe a trip in natural language
 2. Answer a few concrete clarifying questions when key trip information is missing
-3. Stay in a single-column intake flow until the agent has enough information to plan responsibly
+3. Stay in a single-column intake flow for at most one focused follow-up round before moving into the workspace
 4. Watch hotels, restaurants, experiences, and weather appear in real time once the canvas opens
 5. End with a day-by-day plan that feels coherent, clickable, and useful
 6. Change a preference mid-conversation and see the plan adapt instead of restarting
@@ -102,7 +102,8 @@ In other words:
 
 The repository now has:
 
-- a single-column intake flow that stays in conversation mode until required trip inputs are known
+- a single-column intake flow that asks for missing key details once, then moves into the workspace on the next user reply
+- smart defaults for missing non-essential fields, including the current month when the user does not give dates yet
 - a structured `PlanningBrief` stored in session state
 - a lead-agent orchestration loop that decides whether to ask, gather, adapt, or plan
 - parallel real-data gathering for weather, hotels, restaurants, and experiences
@@ -134,15 +135,13 @@ Vela now plans in three stages:
 
 ### Minimum information before opening the canvas
 
-The canvas opens only when Vela has enough to build a responsible first draft:
+Vela uses a two-step readiness policy:
 
-- destination
-- dates or month
-- trip length
-- travel party
-- budget
-- trip priorities
-- constraints or a clear "no special restrictions" confirmation
+- First landing reply: ask for any missing destination, trip length, dates/month, travel party, budget, priorities, and constraints in one compact follow-up
+- Second user reply: move into the workspace instead of staying stuck on landing
+- Actual itinerary generation still requires destination and trip length
+- Missing non-essential details are filled with smart defaults and can keep being refined from the left-hand chat
+- Selective reruns follow actual tool-input dependencies, so unaffected gather steps are reused from the current itinerary
 
 ## Local Setup
 

@@ -23,6 +23,21 @@ from src.tools.schemas import (
 # Tool planning
 # ---------------------------------------------------------------------------
 
+FIELD_TOOL_DEPENDENCIES: dict[str, set[str]] = {
+    "destination": {"get_weather", "get_hotels", "get_restaurants", "get_experiences"},
+    "dates_or_month": {"get_weather"},
+    "travel_party": {"get_experiences"},
+    "budget": {"get_hotels", "get_restaurants"},
+    "hotel_preference": {"get_hotels"},
+    "neighborhood_preference": {"get_hotels", "get_restaurants"},
+    "priorities": {"get_restaurants", "get_experiences"},
+    "dietary_preferences": {"get_restaurants"},
+    "must_do": {"get_restaurants", "get_experiences"},
+    "style_notes": {"get_restaurants", "get_experiences"},
+    "pace": {"get_experiences"},
+    "notes": {"get_restaurants", "get_experiences"},
+}
+
 
 def build_tool_plan(changed_fields: set[str], has_existing_plan: bool) -> dict[str, Any]:
     """Decide which gather-tools to (re)run based on what changed in the brief."""
@@ -30,19 +45,8 @@ def build_tool_plan(changed_fields: set[str], has_existing_plan: bool) -> dict[s
         return {"gather_tools": ["get_weather", "get_hotels", "get_restaurants", "get_experiences"]}
 
     gather_tools: set[str] = set()
-
-    if changed_fields & {"destination", "dates_or_month"}:
-        gather_tools.update({"get_weather", "get_hotels", "get_restaurants", "get_experiences"})
-    if changed_fields & {"trip_length_days", "travel_party"}:
-        gather_tools.update({"get_hotels", "get_restaurants", "get_experiences"})
-    if changed_fields & {"budget"}:
-        gather_tools.update({"get_hotels", "get_restaurants", "get_experiences"})
-    if changed_fields & {"hotel_preference", "neighborhood_preference"}:
-        gather_tools.add("get_hotels")
-    if changed_fields & {"priorities", "must_do", "must_avoid", "dietary_preferences", "style_notes", "notes"}:
-        gather_tools.update({"get_restaurants", "get_experiences"})
-    if changed_fields & {"pace"}:
-        gather_tools.add("get_experiences")
+    for field in changed_fields:
+        gather_tools.update(FIELD_TOOL_DEPENDENCIES.get(field, set()))
 
     return {"gather_tools": sorted(gather_tools)}
 

@@ -28,6 +28,7 @@ class ConversationState(BaseModel):
     messages: list[dict[str, Any]] = Field(default_factory=list)
     planning_brief: PlanningBrief = Field(default_factory=PlanningBrief)
     workspace_ready: bool = False
+    intake_followup_asked: bool = False
     last_itinerary: ItineraryDraft | None = None
 
 

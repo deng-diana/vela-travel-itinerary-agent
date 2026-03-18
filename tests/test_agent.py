@@ -1,56 +1,179 @@
+from datetime import datetime
+
+import src.agent.orchestrator as orchestrator_module
 from src.agent.orchestrator import AgentOrchestrator
+from src.agent.intake import apply_smart_defaults
+from src.agent.research import build_tool_plan, payloads_from_previous
 from src.agent.state import ConversationState
+from src.tools.schemas import (
+    DayItem,
+    DayPlan,
+    ExperienceOption,
+    HotelOption,
+    ItineraryDraft,
+    PlanningBrief,
+    PlanningBriefPatch,
+    RestaurantOption,
+    WeatherSummary,
+)
 
 
-class _FakeResponse:
-    def __init__(self, content, stop_reason):
-        self.content = content
-        self.stop_reason = stop_reason
-
-
-class _FakeMessages:
-    def __init__(self):
-        self.calls = 0
-
+class _SilentMessages:
     def create(self, **kwargs):
-        self.calls += 1
-        if self.calls == 1:
-            return _FakeResponse(
-                content=[
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_1",
-                        "name": "get_weather",
-                        "input": {"destination": "Tokyo", "month": "August"},
-                    }
-                ],
-                stop_reason="tool_use",
-            )
-        return _FakeResponse(
-            content=[{"type": "text", "text": "Tokyo looks warm and humid in August."}],
-            stop_reason="end_turn",
-        )
+        raise AssertionError("Unexpected LLM call during this test")
 
 
-class _FakeClient:
+class _SilentClient:
     def __init__(self):
-        self.messages = _FakeMessages()
+        self.messages = _SilentMessages()
 
 
-def test_orchestrator_handles_tool_loop():
-    orchestrator = AgentOrchestrator(client=_FakeClient(), model="fake-model")
+def _sample_itinerary() -> ItineraryDraft:
+    hotel = HotelOption(
+        id="hotel-1",
+        name="Aoyama Terrace Hotel",
+        neighborhood="Aoyama",
+        category="mid",
+        nightly_rate_usd=260,
+        affiliate_link="https://example.com/hotel",
+        key_highlights=["Quiet street", "Walkable base"],
+        short_description="A polished boutique stay near cafes and galleries.",
+    )
+    restaurant = RestaurantOption(
+        id="restaurant-1",
+        name="Yanaka Ember Counter",
+        cuisine="Izakaya",
+        price_range="$$",
+        neighborhood="Yanaka",
+        must_order_dish="charcoal skewers",
+        reservation_link="https://example.com/restaurant",
+        why_it_fits="Great for a relaxed food-forward evening.",
+    )
+    experience = ExperienceOption(
+        id="experience-1",
+        name="Yanaka Hidden Lanes Walk",
+        category="Walking tour",
+        duration_hours=2.5,
+        estimated_cost_usd=35,
+        neighborhood="Yanaka",
+        booking_link="https://example.com/experience",
+        best_time="Morning",
+        why_it_fits="Adds local texture without forcing a packed day.",
+    )
+    return ItineraryDraft(
+        destination="Tokyo",
+        month="August",
+        trip_length_days=3,
+        travel_party="solo",
+        budget="mid",
+        interests=["food", "culture"],
+        weather=WeatherSummary(
+            destination="Tokyo",
+            month="August",
+            avg_temp_c=30,
+            rainfall_mm=140,
+            conditions_summary="Hot and humid with a chance of showers.",
+            packing_notes=["Light layers", "Umbrella"],
+        ),
+        selected_hotel=hotel,
+        hotels=[hotel],
+        restaurants=[restaurant],
+        experiences=[experience],
+        days=[
+            DayPlan(
+                day_number=1,
+                theme="Old Tokyo",
+                summary="A soft landing in Yanaka.",
+                items=[
+                    DayItem(
+                        time_label="Morning",
+                        kind="experience",
+                        title="Yanaka Hidden Lanes Walk",
+                        neighborhood="Yanaka",
+                        description="Ease into the neighborhood on foot.",
+                        booking_link="https://example.com/experience",
+                    )
+                ],
+            )
+        ],
+        summary="A balanced first draft for Tokyo.",
+    )
+
+
+def test_orchestrator_asks_one_landing_followup_before_planning(monkeypatch):
+    orchestrator = AgentOrchestrator(client=_SilentClient(), model="fake-model")
     state = ConversationState(session_id="session-1")
 
-    result = orchestrator.run(state=state, user_message="Plan Tokyo in August")
+    monkeypatch.setattr(
+        orchestrator_module,
+        "extract_brief_patch",
+        lambda *args, **kwargs: PlanningBriefPatch(destination="Tokyo", trip_length_days=3),
+    )
 
-    assert "Tokyo" in result.reply
-    assert any(event.tool_name == "get_weather" for event in result.events if event.tool_name)
+    result = orchestrator.run(state=state, user_message="3 days in Tokyo")
+
+    assert result.workspace_ready is False
+    assert state.intake_followup_asked is True
+    assert "budget" in result.missing_fields
+    assert "after your next message" in result.reply.lower()
+    assert state.last_itinerary is None
 
 
-def test_orchestrator_keeps_state_messages():
-    orchestrator = AgentOrchestrator(client=_FakeClient(), model="fake-model")
-    state = ConversationState(session_id="session-2")
+def test_orchestrator_moves_to_workspace_after_followup_instead_of_third_landing_round(monkeypatch):
+    orchestrator = AgentOrchestrator(client=_SilentClient(), model="fake-model")
+    state = ConversationState(session_id="session-2", intake_followup_asked=True)
 
-    orchestrator.run(state=state, user_message="Plan Tokyo in August")
+    monkeypatch.setattr(
+        orchestrator_module,
+        "extract_brief_patch",
+        lambda *args, **kwargs: PlanningBriefPatch(),
+    )
 
-    assert state.messages
+    result = orchestrator.run(state=state, user_message="Still deciding")
+
+    assert result.workspace_ready is True
+    assert state.workspace_ready is True
+    assert result.itinerary is None
+    assert result.missing_fields == ["destination", "trip_length_days"]
+    assert "opened the workspace" in result.reply.lower()
+
+
+def test_build_tool_plan_selectively_skips_weather_for_budget_change():
+    plan = build_tool_plan({"budget"}, has_existing_plan=True)
+
+    assert plan["gather_tools"] == ["get_hotels", "get_restaurants"]
+    assert "get_weather" not in plan["gather_tools"]
+
+
+def test_build_tool_plan_only_reruns_weather_for_date_change():
+    plan = build_tool_plan({"dates_or_month"}, has_existing_plan=True)
+
+    assert plan["gather_tools"] == ["get_weather"]
+
+
+def test_build_tool_plan_reruns_hotels_and_restaurants_for_neighborhood_change():
+    plan = build_tool_plan({"neighborhood_preference"}, has_existing_plan=True)
+
+    assert plan["gather_tools"] == ["get_hotels", "get_restaurants"]
+
+
+def test_trip_length_change_can_reuse_existing_gather_payloads():
+    plan = build_tool_plan({"trip_length_days"}, has_existing_plan=True)
+
+    assert plan["gather_tools"] == []
+
+
+def test_apply_smart_defaults_fills_current_month_when_dates_are_missing():
+    brief = apply_smart_defaults(PlanningBrief(destination="Tokyo", trip_length_days=3))
+
+    assert brief.dates_or_month == datetime.now().strftime("%B")
+
+
+def test_payloads_from_previous_preserves_unaffected_tool_results():
+    payloads = payloads_from_previous(_sample_itinerary())
+
+    assert payloads["get_weather"]["destination"] == "Tokyo"
+    assert payloads["get_hotels"][0]["name"] == "Aoyama Terrace Hotel"
+    assert payloads["get_restaurants"][0]["name"] == "Yanaka Ember Counter"
+    assert payloads["get_experiences"][0]["name"] == "Yanaka Hidden Lanes Walk"
+    assert payloads["get_daily_structure"][0]["day_number"] == 1
