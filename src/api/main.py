@@ -74,6 +74,9 @@ def chat(request: ChatRequest) -> ChatResponse:
             reply=result.reply,
             events=result.events,
             itinerary=result.itinerary,
+            workspace_ready=result.workspace_ready,
+            missing_fields=result.missing_fields,
+            planning_brief=result.planning_brief,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

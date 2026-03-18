@@ -17,6 +17,44 @@ class ToolResult(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class PlanningBrief(BaseModel):
+    destination: str | None = None
+    dates_or_month: str | None = None
+    trip_length_days: int | None = None
+    travel_party: str | None = None
+    budget: BudgetTier | None = None
+    priorities: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+    constraints_confirmed: bool = False
+    style_notes: list[str] = Field(default_factory=list)
+    pace: Pace | None = None
+    hotel_preference: str | None = None
+    neighborhood_preference: str | None = None
+    dietary_preferences: list[str] = Field(default_factory=list)
+    must_do: list[str] = Field(default_factory=list)
+    must_avoid: list[str] = Field(default_factory=list)
+
+
+class PlanningBriefPatch(BaseModel):
+    destination: str | None = None
+    dates_or_month: str | None = None
+    trip_length_days: int | None = None
+    travel_party: str | None = None
+    budget: BudgetTier | None = None
+    priorities: list[str] | None = None
+    constraints: list[str] | None = None
+    constraints_confirmed: bool | None = None
+    style_notes: list[str] | None = None
+    pace: Pace | None = None
+    hotel_preference: str | None = None
+    neighborhood_preference: str | None = None
+    dietary_preferences: list[str] | None = None
+    must_do: list[str] | None = None
+    must_avoid: list[str] | None = None
+    day_swap_request: str | None = None
+    notes: str | None = None
+
+
 class WeatherInput(BaseModel):
     destination: str = Field(..., min_length=2)
     month: str = Field(..., min_length=3)
@@ -55,6 +93,10 @@ class DailyStructureInput(BaseModel):
     restaurant_names: list[str] = Field(default_factory=list)
     experience_names: list[str] = Field(default_factory=list)
     pace: Pace = "balanced"
+    style_notes: list[str] = Field(default_factory=list)
+    must_do: list[str] = Field(default_factory=list)
+    must_avoid: list[str] = Field(default_factory=list)
+    day_swap_request: str | None = None
 
 
 class WeatherSummary(BaseModel):

@@ -22,6 +22,9 @@ type HotelOption = {
   nightly_rate_usd: number
   affiliate_link: string
   key_highlights: string[]
+  maps_url?: string | null
+  photo_name?: string | null
+  photo_attribution?: string | null
 }
 type RestaurantOption = {
   id: string
@@ -34,7 +37,16 @@ type RestaurantOption = {
   photo_name?: string | null
   photo_attribution?: string | null
 }
-type ExperienceOption = { id: string; name: string; category: string; neighborhood: string; booking_link: string }
+type ExperienceOption = {
+  id: string
+  name: string
+  category: string
+  neighborhood: string
+  booking_link: string
+  maps_url?: string | null
+  photo_name?: string | null
+  photo_attribution?: string | null
+}
 type DayItem = {
   time_label: string
   kind: string
@@ -80,12 +92,15 @@ function App() {
     const trimmed = input.trim()
     if (!trimmed || isStreaming) return
 
-    setWorkspaceMode(true)
     setError(null)
     setIsStreaming(true)
     setMessages((current) => [...current, { role: 'user', text: trimmed }])
     setSteps([])
-    setLiveNarration('Reading the request and shaping the first planning moves.')
+    setLiveNarration(
+      detectInputLanguage(trimmed) === 'zh'
+        ? '我先读一下你的需求，再决定下一步。'
+        : 'Let me read your request and decide the next move.'
+    )
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -149,6 +164,7 @@ function App() {
     }
 
     if (streamEvent.type === 'tool_started' && streamEvent.tool_name) {
+      setWorkspaceMode(true)
       const step = makeActiveStep(streamEvent.tool_name)
       setSteps((current) => [...current.filter((item) => item.status === 'completed'), step])
       setLiveNarration(step.detail)
@@ -156,6 +172,7 @@ function App() {
     }
 
     if (streamEvent.type === 'tool_completed' && streamEvent.tool_name) {
+      setWorkspaceMode(true)
       const completedStep = makeCompletedStep(streamEvent.tool_name)
       setSteps((current) => {
         const withoutActive = current.filter((item) => item.status === 'completed')
@@ -209,9 +226,12 @@ function App() {
         setMessages((current) => [...current, { role: 'assistant', text: streamEvent.message ?? '' }])
       }
 
-      const payload = streamEvent.payload as { itinerary?: ItineraryDraft | null } | undefined
+      const payload = streamEvent.payload as { itinerary?: ItineraryDraft | null; workspace_ready?: boolean } | undefined
       if (payload?.itinerary) {
         setItinerary(payload.itinerary)
+      }
+      if (payload?.workspace_ready) {
+        setWorkspaceMode(true)
       }
 
       setLiveNarration('')
@@ -241,24 +261,60 @@ function App() {
                 </p>
               </div>
 
-              <div className="mx-auto mt-10 max-w-3xl rounded-[32px] border border-white/10 bg-slate-950/70 p-5 lg:p-6">
-                <form className="space-y-4" onSubmit={handleSubmit}>
-                  <textarea
-                    className="min-h-40 w-full rounded-[24px] border border-slate-800 bg-slate-950 px-5 py-4 text-base text-slate-100 outline-none"
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    placeholder="Where do you want to go, what kind of trip do you want, and what should Vela optimize for?"
-                  />
-                  <div className="flex items-center justify-end">
-                    <button
-                      className="rounded-[20px] bg-emerald-400 px-6 py-3 font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-                      disabled={isStreaming || !input.trim()}
-                      type="submit"
-                    >
-                      Start planning
-                    </button>
+              <div className="mx-auto mt-10 flex min-h-[620px] max-w-3xl flex-col rounded-[32px] border border-white/10 bg-slate-950/70">
+                <div className="flex-1 overflow-auto px-5 py-5 lg:px-6 lg:py-6">
+                  <div className="space-y-3">
+                    <div className="rounded-[20px] border border-slate-800 bg-slate-900/70 px-4 py-4 text-sm leading-7 text-slate-200">
+                      <TypewriterText
+                        text={liveNarration || 'I will stay in single-column mode until I have enough to build a reliable first draft.'}
+                        animate={isStreaming}
+                      />
+                    </div>
+
+                    {messages.map((message, index) => (
+                      <article
+                        key={`landing-${message.role}-${index}`}
+                        className={`rounded-[22px] px-4 py-4 text-sm leading-7 ${
+                          message.role === 'user'
+                            ? 'ml-6 bg-emerald-500/18 text-emerald-50'
+                            : 'mr-6 border border-slate-700 bg-slate-950 text-slate-200'
+                        }`}
+                      >
+                        <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">
+                          {message.role === 'user' ? 'You' : 'Vela'}
+                        </div>
+                        <div className="whitespace-pre-line">{message.text}</div>
+                      </article>
+                    ))}
+
+                    {error ? (
+                      <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                        {error}
+                      </div>
+                    ) : null}
+                    <div ref={transcriptEndRef} />
                   </div>
-                </form>
+                </div>
+
+                <div className="border-t border-white/10 px-5 py-5 lg:px-6 lg:py-6">
+                  <form className="space-y-4" onSubmit={handleSubmit}>
+                    <textarea
+                      className="min-h-40 w-full rounded-[24px] border border-slate-800 bg-slate-950 px-5 py-4 text-base text-slate-100 outline-none"
+                      value={input}
+                      onChange={(event) => setInput(event.target.value)}
+                      placeholder="Where do you want to go, what kind of trip do you want, and what should Vela optimize for?"
+                    />
+                    <div className="flex items-center justify-end">
+                      <button
+                        className="rounded-[20px] bg-emerald-400 px-6 py-3 font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                        disabled={isStreaming || !input.trim()}
+                        type="submit"
+                      >
+                        Start planning
+                      </button>
+                    </div>
+                  </form>
+                </div>
               </div>
             </div>
           </motion.section>
@@ -350,7 +406,7 @@ function App() {
                       {message.role === 'assistant' ? (
                         <TypewriterText text={message.text} animate={index === messages.length - 1 && !isStreaming} />
                       ) : (
-                        message.text
+                        <div className="whitespace-pre-line">{message.text}</div>
                       )}
                     </article>
                   ))}
@@ -394,8 +450,10 @@ function App() {
                     <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
                       {itinerary?.destination ? `${itinerary.destination} / ${itinerary.trip_length_days} days` : 'Your trip canvas'}
                     </h2>
-                    <p className="mt-2 text-sm text-slate-400">
-                      {itinerary ? itinerary.summary || 'Trip structure is updating live.' : 'The plan will open here as Vela gathers weather, stays, food, and route logic.'}
+                    <p className="mt-2 text-sm leading-7 text-slate-400">
+                      {itinerary
+                        ? compactSummary(itinerary.summary) || 'Trip structure is updating live.'
+                        : 'The plan will open here as Vela gathers weather, stays, food, and route logic.'}
                     </p>
                   </div>
                   <div className="rounded-[22px] border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
@@ -409,44 +467,52 @@ function App() {
                   </div>
                 ) : (
                   <div className="mt-6 space-y-5">
-                    <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-                      <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 p-5">
-                        <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Weather Snapshot</div>
-                        {itinerary.weather ? (
-                          <div className="mt-4 space-y-3">
-                            <div className="text-lg font-semibold text-white">
-                              {itinerary.weather.destination} {itinerary.weather.avg_temp_c !== null ? `· ${itinerary.weather.avg_temp_c}C` : ''}
+                    <div className="rounded-[24px] border border-slate-800 bg-slate-900/70 p-5">
+                      <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+                        <div>
+                          <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Weather Snapshot</div>
+                          {itinerary.weather ? (
+                            <div className="mt-4 space-y-3">
+                              <div className="text-lg font-semibold text-white">
+                                {itinerary.weather.destination} {itinerary.weather.avg_temp_c !== null ? `· ${itinerary.weather.avg_temp_c}C` : ''}
+                              </div>
+                              <p className="text-sm leading-6 text-slate-300">{itinerary.weather.conditions_summary}</p>
+                              <div className="flex flex-wrap gap-2">
+                                {itinerary.weather.packing_notes.map((note) => (
+                                  <span
+                                    key={note}
+                                    className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-slate-300"
+                                  >
+                                    {note}
+                                  </span>
+                                ))}
+                              </div>
                             </div>
-                            <p className="text-sm leading-6 text-slate-300">{itinerary.weather.conditions_summary}</p>
-                            <div className="flex flex-wrap gap-2">
-                              {itinerary.weather.packing_notes.map((note) => (
-                                <span
-                                  key={note}
-                                  className="rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-xs text-slate-300"
-                                >
-                                  {note}
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        ) : (
-                          <p className="mt-4 text-sm text-slate-500">Waiting for live weather.</p>
-                        )}
-                      </div>
+                          ) : (
+                            <p className="mt-4 text-sm text-slate-500">Waiting for live weather.</p>
+                          )}
+                        </div>
 
-                      <div className="grid gap-4 sm:grid-cols-3 xl:grid-cols-1">
-                        <SummaryCard
-                          title="Stay"
-                          lines={itinerary.hotels.map((hotel) => `${hotel.name} · ${hotel.neighborhood}`)}
-                        />
-                        <SummaryCard
-                          title="Dining"
-                          lines={itinerary.restaurants.map((restaurant) => `${restaurant.name} · ${restaurant.neighborhood}`)}
-                        />
-                        <SummaryCard
-                          title="Experiences"
-                          lines={itinerary.experiences.map((experience) => `${experience.name} · ${experience.neighborhood}`)}
-                        />
+                        <div className="rounded-[20px] border border-slate-800 bg-slate-950/70 p-4">
+                          <div className="text-xs uppercase tracking-[0.22em] text-slate-400">Trip Notes</div>
+                          <div className="mt-3 space-y-3 text-sm leading-6 text-slate-300">
+                            <p>
+                              {itinerary.selected_hotel
+                                ? `Base yourself at ${itinerary.selected_hotel.name} so the trip has one reliable anchor.`
+                                : 'The stay will become your geographic anchor once the agent confirms the best fit.'}
+                            </p>
+                            <p>
+                              {itinerary.restaurants[0]
+                                ? `Dining starts with ${itinerary.restaurants[0].name}, then expands into neighborhood-led food stops.`
+                                : 'Dining recommendations will be layered into the route as the plan settles.'}
+                            </p>
+                            <p>
+                              {itinerary.experiences[0]
+                                ? `The route is shaped around places like ${itinerary.experiences[0].name} so the days feel intentional, not random.`
+                                : 'Experiences will appear once the route logic is ready.'}
+                            </p>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
@@ -474,11 +540,11 @@ function App() {
 
                             <div className="mt-4 space-y-3">
                               {day.items.map((item, index) => (
-                                <div key={`${item.title}-${index}`} className="rounded-[18px] border border-slate-800 px-3 py-3">
-                                  <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{item.time_label}</div>
-                                  <div className="mt-1 text-sm font-medium text-slate-100">{item.title}</div>
-                                  <div className="mt-1 text-sm leading-6 text-slate-400">{item.description}</div>
-                                </div>
+                                <DayItemCard
+                                  key={`${item.title}-${index}`}
+                                  item={item}
+                                  venue={resolveVenue(item, itinerary)}
+                                />
                               ))}
                             </div>
                           </article>
@@ -496,22 +562,122 @@ function App() {
   )
 }
 
-function SummaryCard({ title, lines }: { title: string; lines: string[] }) {
+function buildPhotoUrl(photoName?: string | null) {
+  if (!photoName) return null
+  return `${API_BASE_URL}/places/photo?name=${encodeURIComponent(photoName)}`
+}
+
+function compactSummary(summary: string) {
+  const normalized = summary.replace(/#+\s*/g, ' ').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  if (normalized.length <= 260) return normalized
+
+  const slice = normalized.slice(0, 260)
+  const cutoff = Math.max(slice.lastIndexOf('. '), slice.lastIndexOf('。'))
+  return `${slice.slice(0, cutoff > 120 ? cutoff + 1 : 260).trim()}…`
+}
+
+function normalizeText(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+}
+
+function sameVenueTitle(left: string, right: string) {
+  const a = normalizeText(left)
+  const b = normalizeText(right)
+  return a === b || a.includes(b) || b.includes(a)
+}
+
+type ResolvedVenue = {
+  title: string
+  subtitle: string
+  href?: string | null
+  photoName?: string | null
+  attribution?: string | null
+  ctaLabel: string
+}
+
+function resolveVenue(item: DayItem, itinerary: ItineraryDraft): ResolvedVenue | null {
+  const hotel = itinerary.hotels.find((entry) => sameVenueTitle(entry.name, item.title))
+  if (hotel) {
+    return {
+      title: hotel.name,
+      subtitle: `${hotel.neighborhood} · ${hotel.category} · $${hotel.nightly_rate_usd}/night`,
+      href: hotel.maps_url || hotel.affiliate_link,
+      photoName: hotel.photo_name,
+      attribution: hotel.photo_attribution,
+      ctaLabel: 'View stay',
+    }
+  }
+
+  const restaurant = itinerary.restaurants.find((entry) => sameVenueTitle(entry.name, item.title))
+  if (restaurant) {
+    return {
+      title: restaurant.name,
+      subtitle: `${restaurant.neighborhood} · ${restaurant.cuisine}`,
+      href: restaurant.maps_url || restaurant.reservation_link,
+      photoName: restaurant.photo_name,
+      attribution: restaurant.photo_attribution,
+      ctaLabel: 'Open place',
+    }
+  }
+
+  const experience = itinerary.experiences.find((entry) => sameVenueTitle(entry.name, item.title))
+  if (experience) {
+    return {
+      title: experience.name,
+      subtitle: `${experience.neighborhood} · ${experience.category}`,
+      href: experience.maps_url || experience.booking_link,
+      photoName: experience.photo_name,
+      attribution: experience.photo_attribution,
+      ctaLabel: 'View stop',
+    }
+  }
+
+  return null
+}
+
+function DayItemCard({ item, venue }: { item: DayItem; venue: ResolvedVenue | null }) {
+  const photoUrl = buildPhotoUrl(venue?.photoName)
+  const href = venue?.href || item.booking_link
+
   return (
-    <div className="rounded-[22px] border border-slate-800 bg-slate-900/70 p-4">
-      <div className="text-xs uppercase tracking-[0.22em] text-slate-400">{title}</div>
-      <div className="mt-3 space-y-2">
-        {lines.length ? (
-          lines.map((line) => (
-            <div key={line} className="rounded-[16px] border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-200">
-              {line}
-            </div>
-          ))
-        ) : (
-          <div className="text-sm text-slate-500">Waiting for {title.toLowerCase()}.</div>
-        )}
+    <article className="overflow-hidden rounded-[18px] border border-slate-800 bg-slate-950">
+      {photoUrl ? (
+        <div className="aspect-[16/9] w-full bg-slate-900">
+          <img className="h-full w-full object-cover" src={photoUrl} alt={venue?.title || item.title} loading="lazy" />
+        </div>
+      ) : null}
+
+      <div className="space-y-3 px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-xs uppercase tracking-[0.18em] text-slate-400">{item.time_label}</div>
+            <div className="mt-1 text-sm font-medium text-slate-100">{item.title}</div>
+            {venue?.subtitle ? <div className="mt-1 text-xs text-slate-400">{venue.subtitle}</div> : null}
+          </div>
+          {item.neighborhood ? <div className="text-[11px] uppercase tracking-[0.14em] text-slate-500">{item.neighborhood}</div> : null}
+        </div>
+
+        <div className="text-sm leading-6 text-slate-300">{item.description}</div>
+
+        {href ? (
+          <div className="flex items-center justify-between gap-3">
+            <a
+              className="rounded-full border border-slate-700 bg-slate-900 px-3 py-2 text-xs uppercase tracking-[0.16em] text-slate-200"
+              href={href}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {venue?.ctaLabel || 'Open'}
+            </a>
+            {venue?.attribution ? <span className="line-clamp-1 text-[10px] text-slate-500">Photo: {venue.attribution}</span> : null}
+          </div>
+        ) : null}
       </div>
-    </div>
+    </article>
   )
 }
 
@@ -542,7 +708,7 @@ function TypewriterText({ text, animate }: { text: string; animate: boolean }) {
   }, [text, animate])
 
   const displayText = animate ? visibleText : text
-  return <span className={animate ? 'agent-shimmer-text' : ''}>{displayText}</span>
+  return <span className={`whitespace-pre-line ${animate ? 'agent-shimmer-text' : ''}`}>{displayText}</span>
 }
 
 function makeActiveStep(toolName: string): AgentStep {
@@ -589,6 +755,10 @@ function prettyToolName(toolName: string): string {
   }
 
   return names[toolName] ?? toolName
+}
+
+function detectInputLanguage(value: string) {
+  return /[\u4e00-\u9fff]/.test(value) ? 'zh' : 'en'
 }
 
 function parseSseChunk(chunk: string): { event: string; data: unknown } | null {

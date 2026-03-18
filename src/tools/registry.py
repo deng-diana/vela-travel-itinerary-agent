@@ -4,13 +4,11 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+from src.tools.live_daily_structure import get_daily_structure
 from src.tools.live_experiences import get_experiences
 from src.tools.live_hotels import get_hotels
 from src.tools.live_weather import get_weather
 from src.tools.live_restaurants import get_restaurants
-from src.tools.mock_data import (
-    get_daily_structure,
-)
 from src.tools.schemas import (
     DailyStructureInput,
     ExperienceSearchInput,

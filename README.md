@@ -12,7 +12,7 @@ This repository is being built against the original PDF brief. The non-negotiabl
 - A split-panel UI: conversation on the left, live itinerary on the right
 - Required tools: `get_hotels`, `get_restaurants`, `get_experiences`, `get_weather`, `get_daily_structure`
 - Conversation memory so the plan updates when preferences change mid-chat
-- Structured itinerary output with day cards, venue tiles, and affiliate booking links
+- Structured itinerary output with day cards, venue tiles, and booking CTAs
 
 Mock data is acceptable. The assessment is testing product thinking, architecture, orchestration, and UX quality rather than third-party API integration.
 
@@ -21,17 +21,18 @@ Mock data is acceptable. The assessment is testing product thinking, architectur
 A traveller should be able to:
 
 1. Describe a trip in natural language
-2. Answer a few smart clarifying questions
-3. Watch hotels, restaurants, experiences, and weather appear in real time
-4. End with a day-by-day plan that feels coherent, clickable, and useful
-5. Change a preference mid-conversation and see the plan adapt instead of restarting
+2. Answer a few concrete clarifying questions when key trip information is missing
+3. Stay in a single-column intake flow until the agent has enough information to plan responsibly
+4. Watch hotels, restaurants, experiences, and weather appear in real time once the canvas opens
+5. End with a day-by-day plan that feels coherent, clickable, and useful
+6. Change a preference mid-conversation and see the plan adapt instead of restarting
 
 ## Chosen Technical Direction
 
 The brief leaves the UI stack open. For this project, the target architecture is:
 
 - Backend: FastAPI
-- Agent runtime: Anthropic Messages API with tool use
+- Agent runtime: Anthropic Messages API for intake, clarification, copy polish, and final response
 - Data validation: Pydantic v2
 - Frontend: React + TypeScript + Vite
 - Streaming: Server-Sent Events from FastAPI to the UI
@@ -43,6 +44,8 @@ Why this direction:
 - React is the fastest route to a polished split-panel product experience
 - Vite keeps the frontend simple and avoids overlapping backend concerns with FastAPI
 - In-memory session state is enough for an interview build while keeping the architecture clean
+- A code-led planner is easier to adapt incrementally than handing the full itinerary over to a model each turn
+- Claude is used where it adds the most value: extracting intent, asking better questions, and warming up the final copy
 
 ## Target Architecture
 
@@ -55,11 +58,14 @@ Why this direction:
   /tools
     schemas.py             # tool input/output models
     registry.py            # Claude tool schema definitions
-    mock_data.py           # realistic mock hotel/restaurant/experience/weather data
-    service.py             # tool execution functions
+    mock_data.py           # fallback data and itinerary scaffolding
+    live_weather.py        # Open-Meteo live weather snapshot
+    live_restaurants.py    # Google Places restaurant search
+    live_experiences.py    # Google Places experience search
+    live_hotels.py         # Google Places hotel POI search
+    live_daily_structure.py# code-led itinerary planner
   /api
     main.py                # FastAPI app
-    routes.py              # POST /chat and stream endpoints
     models.py              # API request/response/event models
     dependencies.py        # settings and shared services
   /ui
@@ -71,9 +77,66 @@ Why this direction:
   IMPLEMENTATION_PLAN.md
 ```
 
+## Data Providers And Hotel CTA Tradeoff
+
+The current build uses a mixed real-data strategy:
+
+- Weather: Open-Meteo live weather snapshot
+- Restaurants: Google Places Text Search + Places photo proxy
+- Experiences: Google Places Text Search + Places photo proxy
+- Hotels: Google Places hotel POI search + Places photo proxy
+
+This was a deliberate tradeoff.
+
+For hotels, the stronger long-term production path would be Booking.com Demand API because it is better suited for real availability, pricing, and affiliate/deep-link flows. However, Booking Demand API requires partner onboarding, authentication, and an affiliate ID, which is not realistic within the time constraints of this assessment build.
+
+Because the PDF explicitly allows mock data and prioritizes product thinking over third-party integrations, the current implementation uses Google hotel POIs plus standard booking/location CTAs instead of a true affiliate hotel integration.
+
+In other words:
+
+- hotel cards use real place data and real images
+- hotel CTAs are currently standard outbound links, not affiliate links
+- a future production version would replace this with Booking Demand API
+
 ## Current Status
 
-The current repository is an early scaffold, not a finished assessment submission. The next build phase is to replace the simple local intent router with a real tool-driven orchestration loop and add the split-panel UI.
+The repository now has:
+
+- a single-column intake flow that stays in conversation mode until required trip inputs are known
+- a structured `PlanningBrief` stored in session state
+- a lead-agent orchestration loop that decides whether to ask, gather, adapt, or plan
+- parallel real-data gathering for weather, hotels, restaurants, and experiences
+- a code-led day planner that can be selectively rerun when user preferences change
+- Claude-assisted copy polish for warmer, more human itinerary language
+
+The highest-value remaining work is itinerary quality, UI polish, and stronger selective adaptation for more change types.
+
+## Planning Logic
+
+Vela now plans in three stages:
+
+1. Intake and readiness gate
+   - Extract the trip brief from conversation
+   - Detect missing required information
+   - Ask only the missing questions, using concrete examples and options
+2. Parallel gather
+   - Once the brief is ready, gather weather, hotels, restaurants, and experiences in parallel
+3. Compose and adapt
+   - Build the itinerary structure in code
+   - Let Claude polish the wording
+   - When the user changes budget, pace, neighborhood, or priorities, selectively rerun only the affected tools
+
+### Minimum information before opening the canvas
+
+The canvas opens only when Vela has enough to build a responsible first draft:
+
+- destination
+- dates or month
+- trip length
+- travel party
+- budget
+- trip priorities
+- constraints or a clear "no special restrictions" confirmation
 
 ## Local Setup
 
@@ -102,7 +165,7 @@ uvicorn src.api.main:app --reload
 
 ## With More Time
 
-- Replace mock data with live providers for hotels, restaurants, weather, and booking links
+- Replace Google hotel POIs with Booking Demand API for true availability, pricing, and affiliate links
 - Add map awareness and travel-time constraints between venues
 - Persist sessions and itineraries
 - Add budget estimation, packing suggestions, and visa requirements

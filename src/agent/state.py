@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from src.tools.schemas import ItineraryDraft
+from src.tools.schemas import ItineraryDraft, PlanningBrief
 
 
 AgentEventType = Literal[
@@ -26,6 +26,8 @@ class AgentEvent(BaseModel):
 class ConversationState(BaseModel):
     session_id: str
     messages: list[dict[str, Any]] = Field(default_factory=list)
+    planning_brief: PlanningBrief = Field(default_factory=PlanningBrief)
+    workspace_ready: bool = False
     last_itinerary: ItineraryDraft | None = None
 
 
@@ -33,3 +35,6 @@ class AgentRunResult(BaseModel):
     reply: str
     events: list[AgentEvent] = Field(default_factory=list)
     itinerary: ItineraryDraft | None = None
+    workspace_ready: bool = False
+    missing_fields: list[str] = Field(default_factory=list)
+    planning_brief: PlanningBrief = Field(default_factory=PlanningBrief)

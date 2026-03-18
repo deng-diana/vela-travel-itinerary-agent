@@ -22,17 +22,24 @@ Example input from the brief:
 The agent should:
 
 1. Understand the request and identify missing information
-2. Ask targeted clarifying questions
-3. Call tools for hotels, restaurants, experiences, and weather
-4. Synthesize the results into a coherent day-by-day plan
-5. Render the itinerary live as data arrives
-6. Update the plan when the user changes preferences mid-conversation
+2. Ask targeted clarifying questions with concrete examples or options
+3. Stay in a single-column intake flow until the minimum planning brief is complete
+4. Call tools for hotels, restaurants, experiences, and weather
+5. Synthesize the results into a coherent day-by-day plan
+6. Render the itinerary live as data arrives
+7. Update the plan when the user changes preferences mid-conversation
 
 ## 4. Product Principles
 
 ### 4.1 Ask Before Acting
 
 The first response should not blindly generate a plan. It should confirm missing constraints such as neighborhood preference, accommodation style, dietary restrictions, or pace.
+
+Clarifying questions should be concrete and easy to answer. For example:
+
+- "Do you want a slower pace, or do you want to fit in as much as possible?"
+- "Would you rather stay in a lively central area, or somewhere quieter and more local?"
+- "Is this trip mainly about food, art, classic landmarks, or hidden gems?"
 
 ### 4.2 Show Progress, Not Hidden Reasoning
 
@@ -51,14 +58,18 @@ The final itinerary should feel concrete and actionable:
 
 If the user changes a preference, the plan should evolve from the current conversation context rather than resetting from scratch.
 
+### 4.5 Structure First, Warmth Second
+
+The itinerary should be built in a deterministic planning layer first, then polished by the model for tone and warmth. This keeps the plan stable while still making the product feel thoughtful and human.
+
 ## 5. Functional Requirements
 
 ### 5.1 Required Backend
 
 - `POST /chat` endpoint with conversation state
-- agent orchestration loop that decides which tools to call and in what order
+- agent orchestration loop that decides whether to ask clarifying questions, gather tools, adapt an existing plan, or build a new one
 - Pydantic request/response models
-- structured tool definitions compatible with Claude tool use
+- structured tool definitions and a planning brief stored in state
 
 ### 5.2 Required Tools
 
@@ -80,10 +91,12 @@ Bonus tools:
 
 ### 5.3 Required Frontend Experience
 
-The product must have a split-panel UI:
+The product should behave in two stages:
 
-- Left panel: conversation and agent status
-- Right panel: live itinerary
+- Stage 1: single-column intake while the agent gathers missing planning inputs
+- Stage 2: split-panel workspace once the brief is ready
+  - Left panel: conversation and agent status
+  - Right panel: live itinerary canvas
 
 Required right-panel behavior:
 
@@ -102,6 +115,20 @@ The system must retain enough conversation context to support preference changes
 - "Add more food experiences"
 - "Move one day slower because we land late"
 
+The implementation should treat these as patches to the current planning brief, not as a new trip request. The system should rerun only the affected planning steps wherever possible.
+
+### 5.5 Minimum Planning Brief
+
+The agent should not open the full itinerary canvas until it knows:
+
+- destination
+- dates or month
+- trip length
+- travel party
+- budget
+- top priorities
+- constraints, or an explicit confirmation that there are no special constraints
+
 ## 6. Technical Decisions
 
 These are implementation choices for this repository, not extra assessment requirements.
@@ -109,9 +136,10 @@ These are implementation choices for this repository, not extra assessment requi
 ### 6.1 Backend
 
 - FastAPI for API endpoints and streaming
-- Anthropic Claude for tool calling and synthesis
+- Anthropic Claude for intent extraction, clarifying questions, copy polish, and final response
 - Pydantic v2 for tool and API schemas
 - in-memory session state for the assessment build
+- code-led planning logic for day structure and adaptive updates
 
 ### 6.2 Frontend
 
@@ -119,7 +147,19 @@ These are implementation choices for this repository, not extra assessment requi
 - split-panel layout with streaming updates from the backend
 - optimistic, event-driven rendering rather than waiting for a single final response
 
-### 6.3 Streaming Model
+### 6.3 Orchestration Model
+
+The preferred architecture is:
+
+- one lead agent
+- one structured planning brief in session state
+- parallel tool gathering for weather, hotels, restaurants, and experiences
+- one planning layer that turns gathered results into day-by-day structure
+- one polishing layer that makes the final copy warmer and more useful
+
+This is preferred over multiple independent LLM sub-agents because it is easier to debug, cheaper to run, and more stable when the user changes preferences.
+
+### 6.4 Streaming Model
 
 The UI should receive structured events, for example:
 
@@ -136,7 +176,8 @@ This allows the right panel to evolve progressively as tools finish.
 The implementation should converge on a small set of typed domain objects:
 
 - `ConversationState`
-- `UserPreferenceProfile`
+- `PlanningBrief`
+- `PlanningBriefPatch`
 - `ToolInvocation`
 - `ToolResult`
 - `VenueCard`
@@ -151,8 +192,9 @@ The build is successful when:
 
 - the repository has a clean separation between agent logic, tools, API, and UI
 - the agent performs multiple tool calls and synthesizes results instead of concatenating them
+- the agent asks for missing information before it starts planning
 - the UI feels like a coherent product, not a debug console
-- the user can change a preference mid-conversation and the itinerary updates
+- the user can change a preference mid-conversation and the itinerary updates without restarting from scratch
 - the output is believable enough that a real traveller could use it
 
 ## 9. Delivery Checklist
@@ -171,7 +213,6 @@ Before submission, the project should include:
 
 To stay focused, the first shipping version does not need:
 
-- live third-party API integrations
 - persistent production infrastructure
 - authentication or multi-user collaboration
 - full cost optimization or route planning

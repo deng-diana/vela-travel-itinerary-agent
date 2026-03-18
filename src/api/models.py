@@ -3,7 +3,7 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from src.agent.state import AgentEvent
-from src.tools.schemas import ItineraryDraft
+from src.tools.schemas import ItineraryDraft, PlanningBrief
 
 
 class ChatRequest(BaseModel):
@@ -16,3 +16,6 @@ class ChatResponse(BaseModel):
     reply: str
     events: list[AgentEvent]
     itinerary: ItineraryDraft | None = None
+    workspace_ready: bool = False
+    missing_fields: list[str] = Field(default_factory=list)
+    planning_brief: PlanningBrief | None = None
