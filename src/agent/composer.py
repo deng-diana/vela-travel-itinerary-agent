@@ -12,14 +12,17 @@ from typing import Any
 from src.agent.llm_helpers import extract_text, normalize_blocks, parse_json_block
 from src.agent.research import _hidden_gem_score, _normalize_text
 from src.tools.schemas import (
+    BudgetEstimate,
     DailyStructureInput,
     DayItem,
     DayPlan,
     ExperienceOption,
     HotelOption,
     ItineraryDraft,
+    PackingSuggestions,
     PlanningBrief,
     RestaurantOption,
+    VisaRequirements,
     WeatherSummary,
 )
 
@@ -76,6 +79,7 @@ def generate_daily_structure_with_claude(
 ) -> list[DayPlan] | None:
     """Ask Claude to generate a multi-day itinerary structure."""
     try:
+        geo_clusters = planning_context.get("geo_clusters", {})
         response = client.messages.create(
             model=model,
             max_tokens=1800,
@@ -84,21 +88,26 @@ def generate_daily_structure_with_claude(
                 "You are the planning brain for Vela.\n"
                 "Use the provided venues and trip brief to create a strong, structured multi-day itinerary.\n"
                 "Return JSON only with this shape: "
-                '{"days":[{"day_number":1,"theme":"...","summary":"...","items":[{"time_label":"Morning","kind":"experience","title":"...","neighborhood":"...","description":"..."}]}]}.\n'
-                "Rules:\n"
-                "- Use only venues provided in the candidate lists.\n"
-                "- Minimize repeats. Do not reuse the same restaurant or experience unless there are no strong alternatives.\n"
-                "- Keep each day geographically sensible.\n"
-                "- Day 1 should be lighter and include the hotel plus one nearby meal and a soft evening idea.\n"
-                "- Full days should include Morning, Lunch, Afternoon, and Dinner. Evening is optional.\n"
-                "- Morning and Afternoon should normally be experiences, walks, markets, museums, or neighborhood exploration.\n"
-                "- Lunch and Dinner must be restaurants from the restaurant shortlist.\n"
-                "- Never use a landmark, museum, or attraction as Lunch or Dinner.\n"
-                "- Prefer concrete actions over vague notes. The user should know what to do in each time block.\n"
-                "- Use the hotel's neighborhood as a base for Day 1 and one or more nearby anchors.\n"
-                "- If the brief emphasizes hidden gems or local feel, include at least one less-obvious venue or quieter neighborhood choice.\n"
-                "- Respect must_do and must_avoid.\n"
-                "- Do not repeat the same restaurant or experience across multiple days unless there are no strong alternatives left.\n"
+                '{"days":[{"day_number":1,"theme":"...","summary":"...","practical_tips":["..."],"day_estimated_cost_usd":120,"items":[{"time_label":"Morning","kind":"experience","title":"...","neighborhood":"...","description":"...","transport_note":"10-min walk from hotel"}]}]}.\n'
+                "ITINERARY QUALITY STANDARD — every day MUST include all of the following:\n"
+                "  1. Hotel check-in (kind='hotel', time_label='Hotel', Day 1 only). title=hotel name, neighborhood=hotel neighborhood.\n"
+                "  2. Morning activity (kind='experience', time_label='Morning') — museum, market, walk, landmark.\n"
+                "  3. Lunch (kind='restaurant', time_label='Lunch') — from the restaurant shortlist.\n"
+                "  4. Afternoon activity (kind='experience', time_label='Afternoon') — different from morning, nearby.\n"
+                "  5. Dinner (kind='restaurant', time_label='Dinner') — from the restaurant shortlist, different from lunch.\n"
+                "  6. Evening plan (kind='experience' or 'note', time_label='Evening') — bar, walk, show, night market, rooftop.\n"
+                "Day 1 may be slightly lighter (arrival day): hotel + nearby lunch + 1 afternoon activity + dinner + evening walk.\n"
+                "From Day 2 onward: full 6-item days as above are REQUIRED — missing any of the 6 is a quality failure.\n"
+                "\nAdditional rules:\n"
+                "- Use only venues from the candidate lists for restaurants. Activities can be well-known landmarks or neighborhoods.\n"
+                "- Minimize repeats: never reuse the same restaurant or experience across days.\n"
+                "- GEOGRAPHIC CLUSTERING: anchor each day to one neighborhood area per the day_neighborhood_plan.\n"
+                "  Day 1 centers on the hotel neighborhood. Subsequent days rotate through other areas.\n"
+                "- Lunch and Dinner MUST be restaurants from the shortlist. Never use a landmark as a meal.\n"
+                "- Prefer concrete, bookable actions. The traveller should know exactly what to do in each slot.\n"
+                "- transport_note: for every item after the first, add a short note from the previous stop — '10-min walk', 'Metro Line 2, 3 stops', '5-min taxi'. Omit for hotel check-in.\n"
+                "- practical_tips: 1-3 sharp, destination-specific tips per day — e.g. 'Book Septime 2 weeks ahead', 'Arrive before 8am to beat Tsukiji crowds'. No generic advice.\n"
+                "- day_estimated_cost_usd: per-person estimate for food + activities + local transport (exclude hotel nightly rate).\n"
                 "- Write in the same language the user used in the planning brief.\n"
             ),
             messages=[
@@ -108,6 +117,7 @@ def generate_daily_structure_with_claude(
                         {
                             "planning_brief": brief.model_dump(mode="json"),
                             "weather": weather_payload,
+                            "geographic_clustering": geo_clusters,
                             "selected_hotel": planning_context["selected_hotel"].model_dump(mode="json")
                             if planning_context["selected_hotel"]
                             else None,
@@ -314,6 +324,33 @@ def build_itinerary(
 
     days = enrich_days(days, selected_hotel, restaurants, experiences)
 
+    budget_estimate = None
+    if "estimate_budget" in tool_payloads:
+        try:
+            budget_estimate = BudgetEstimate.model_validate(tool_payloads["estimate_budget"])
+        except Exception:
+            pass
+    if budget_estimate is None and previous:
+        budget_estimate = previous.budget_estimate
+
+    visa_requirements = None
+    if "get_visa_requirements" in tool_payloads:
+        try:
+            visa_requirements = VisaRequirements.model_validate(tool_payloads["get_visa_requirements"])
+        except Exception:
+            pass
+    if visa_requirements is None and previous:
+        visa_requirements = previous.visa_requirements
+
+    packing_suggestions = None
+    if "get_packing_suggestions" in tool_payloads:
+        try:
+            packing_suggestions = PackingSuggestions.model_validate(tool_payloads["get_packing_suggestions"])
+        except Exception:
+            pass
+    if packing_suggestions is None and previous:
+        packing_suggestions = previous.packing_suggestions
+
     return ItineraryDraft(
         destination=daily_input.destination,
         month=daily_input.month,
@@ -327,6 +364,9 @@ def build_itinerary(
         restaurants=restaurants,
         experiences=experiences,
         days=days,
+        budget_estimate=budget_estimate,
+        visa_requirements=visa_requirements,
+        packing_suggestions=packing_suggestions,
         summary=previous.summary if previous else "Trip plan updated.",
     )
 
@@ -566,16 +606,20 @@ def compose_final_reply(
 
     response = client.messages.create(
         model=model,
-        max_tokens=700,
+        max_tokens=900,
         system=(
             f"{system_prompt}\n\n"
             "You are Vela, a thoughtful travel concierge. "
-            "Write a short final reply in plain text, not markdown. "
-            "Keep it warm, concrete, and concise. "
-            "Reply in the same language the user used. "
-            "Include a short 'Weather & What to Wear' section with 2 to 3 bullet points when weather is available. "
-            "Then give a short trip summary and one useful follow-up question. "
-            "Do not paste the full itinerary."
+            "Return JSON with two keys: 'reply' (string) and 'story_meta' (object).\n"
+            "reply: short final message in plain text, same language as user. "
+            "Include 'Weather & What to Wear' (2-3 bullets) when weather is available. "
+            "Short trip summary + one useful follow-up question. Under 400 words. Do not paste full itinerary.\n"
+            "story_meta: {\n"
+            '  "trip_tone": one evocative 2-4 word descriptor, e.g. "romantic & foodie" / "cultural deep-dive" / "adventure & nature",\n'
+            '  "key_moments": array of 3-5 strings, each a vivid standout moment from the itinerary, e.g. "Sunrise at Fushimi Inari", "Omakase dinner at Sukiyabashi Jiro",\n'
+            '  "cultural_notes": array of 2-4 strings, practical etiquette/customs for this destination, e.g. "Remove shoes before entering temples", "Avoid eating or drinking while walking"\n'
+            "}\n"
+            "Return only valid JSON."
         ),
         messages=[
             {
@@ -591,7 +635,16 @@ def compose_final_reply(
             }
         ],
     )
-    return extract_text(normalize_blocks(response.content))
+    raw = extract_text(normalize_blocks(response.content))
+    try:
+        parsed = parse_json_block(raw)
+        reply_text = parsed.get("reply", raw)
+        story_meta = parsed.get("story_meta", {})
+        # Attach story_meta back onto the itinerary object via a side-channel dict
+        # (caller in orchestrator will apply these to the itinerary model)
+        return reply_text, story_meta
+    except Exception:
+        return raw, {}
 
 
 def compact_reply(reply: str, itinerary: ItineraryDraft | None) -> str:

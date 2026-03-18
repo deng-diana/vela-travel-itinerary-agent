@@ -1,9 +1,9 @@
 """Lead agent orchestrator: coordinates intake, research, composition, and adaptation.
 
-Architecture: Lead Agent + Parallel Workers + Verify Loop
+Architecture: Lead Agent + Agentic Tool-Use Loop + Verify Loop
 - Lead agent (this file) coordinates the overall flow
-- Claude proposes tool calls via tool-use API (hybrid pattern)
-- Workers execute tools in parallel via ThreadPoolExecutor
+- Standard Anthropic tool-use loop: Claude proposes → parallel execution → results returned to Claude
+- Two rounds of gathering: Round 1 (base data) → Round 2 (budget + packing, informed by Round 1)
 - Composer builds and verifies the itinerary with a repair loop
 """
 
@@ -47,7 +47,7 @@ from src.agent.research import (
     prepare_candidate_context,
 )
 from src.agent.state import AgentEvent, AgentRunResult, ConversationState
-from src.tools.registry import get_claude_tools, run_tool
+from src.tools.registry import GATHER_TOOL_NAMES, get_claude_tools, run_tool
 from src.tools.schemas import (
     ItineraryDraft,
     PlanningBrief,
@@ -166,31 +166,13 @@ class AgentOrchestrator:
         if preface:
             yield AgentEvent(type="assistant_message", message=preface)
 
-        # ── Phase 3: Tool planning (hybrid — Claude proposes, we execute) ─
-        tool_plan = self._plan_tools_with_claude(brief, changed_fields, state.last_itinerary)
-        previous_payloads = payloads_from_previous(state.last_itinerary)
+        # ── Phase 3+4: Agentic gather loop (standard Anthropic tool-use pattern) ─
+        # Round 1: Claude sees brief → proposes base tools → results returned to Claude
+        # Round 2: Claude sees hotel/weather → proposes estimate_budget + packing → results returned
+        tool_payloads, gather_events = self._agentic_gather_loop(brief, changed_fields, state.last_itinerary)
         tool_inputs: dict[str, dict[str, Any]] = {}
-        tool_payloads: dict[str, Any] = dict(previous_payloads)
-
-        # Build inputs and emit tool_started events
-        gather_specs: list[tuple[str, dict[str, Any]]] = []
-        for tool_name in tool_plan["gather_tools"]:
-            tool_input = build_tool_input(tool_name, brief, state.last_itinerary)
-            if not tool_input:
-                continue
-            tool_inputs[tool_name] = tool_input
-            gather_specs.append((tool_name, tool_input))
-            yield AgentEvent(type="tool_started", tool_name=tool_name, message=f"Running {tool_name}")
-
-        # ── Phase 4: Parallel gather (workers) ───────────────────────
-        if gather_specs:
-            results = execute_tools_parallel(gather_specs)
-            for tool_name, (status, result) in results.items():
-                if status == "ok":
-                    tool_payloads[tool_name] = result
-                    yield AgentEvent(type="tool_completed", tool_name=tool_name, payload=result)
-                else:
-                    yield AgentEvent(type="tool_completed", tool_name=tool_name, payload={"error": result})
+        for event in gather_events:
+            yield event
 
         # ── Phase 5: Compose daily structure ─────────────────────────
         planning_context = prepare_candidate_context(brief, tool_payloads, state.last_itinerary)
@@ -262,14 +244,19 @@ class AgentOrchestrator:
                 self.client, self.model, self.system_prompt, brief, itinerary,
             )
 
-        # ── Phase 9: Final reply ─────────────────────────────────────
-        raw_reply = compose_final_reply(
+        # ── Phase 9: Final reply + story metadata ─────────────────────
+        raw_reply, story_meta = compose_final_reply(
             self.client, self.model, self.system_prompt,
             brief, itinerary, changed_fields,
         )
         reply = compact_reply(raw_reply, itinerary)
         if itinerary:
-            itinerary = itinerary.model_copy(update={"summary": reply})
+            itinerary = itinerary.model_copy(update={
+                "summary": reply,
+                "trip_tone": story_meta.get("trip_tone") or itinerary.trip_tone,
+                "key_moments": story_meta.get("key_moments") or itinerary.key_moments,
+                "cultural_notes": story_meta.get("cultural_notes") or itinerary.cultural_notes,
+            })
 
         messages.append({"role": "assistant", "content": reply})
         state.messages = messages
@@ -288,62 +275,148 @@ class AgentOrchestrator:
         )
 
     # ------------------------------------------------------------------
-    # Hybrid tool planning: Claude proposes, orchestrator executes
+    # Agentic gather loop: proper Anthropic tool-use pattern
     # ------------------------------------------------------------------
 
-    def _plan_tools_with_claude(
+    def _agentic_gather_loop(
         self,
         brief: PlanningBrief,
         changed_fields: set[str],
         previous: ItineraryDraft | None,
-    ) -> dict[str, Any]:
-        """Let Claude decide which tools to call via tool-use API.
+    ) -> tuple[dict[str, Any], list[AgentEvent]]:
+        """Standard Anthropic tool-use loop with two rounds of parallel execution.
 
-        Hybrid approach: Claude sees the tool schemas and proposes calls,
-        but if Claude fails or returns unexpected output, we fall back to
-        the deterministic build_tool_plan based on field dependencies.
-        The orchestrator then executes proposed tools in parallel for speed.
+        Round 1: Claude sees trip brief → proposes base gather tools (weather, hotels,
+                 restaurants, experiences, visa) → all executed in parallel →
+                 ALL results returned to Claude via tool_result messages.
+
+        Round 2: Claude now sees hotel neighborhood & weather conditions →
+                 proposes dependent tools (estimate_budget, get_packing_suggestions)
+                 using actual data from Round 1 → executed in parallel →
+                 results returned to Claude.
+
+        This closes the tool-use loop: Claude synthesises across all results and
+        can make geographically informed decisions in the daily structure phase.
+
+        Falls back to deterministic build_tool_plan if the loop fails entirely.
         """
+        events: list[AgentEvent] = []
+        tool_payloads: dict[str, Any] = dict(payloads_from_previous(previous))
+
+        gather_tools = get_claude_tools(names=GATHER_TOOL_NAMES)
         has_existing_plan = previous is not None
 
-        try:
-            tools = get_claude_tools()
-            # Only include gather tools (not get_daily_structure, which runs after gather)
-            gather_tools = [t for t in tools if t["name"] != "get_daily_structure"]
-
-            context = {
-                "planning_brief": brief.model_dump(mode="json"),
-                "has_existing_plan": has_existing_plan,
-                "changed_fields": sorted(changed_fields) if changed_fields else [],
-            }
-            if has_existing_plan:
-                context["instruction"] = (
-                    "The user already has a plan. Only call tools whose inputs are affected "
-                    "by the changed fields. If nothing changed, call no tools."
-                )
-
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=600,
-                system=TOOL_PLANNING_PROMPT,
-                tools=gather_tools,
-                messages=[{"role": "user", "content": json.dumps(context, ensure_ascii=False)}],
+        context: dict[str, Any] = {
+            "planning_brief": brief.model_dump(mode="json"),
+            "has_existing_plan": has_existing_plan,
+            "changed_fields": sorted(changed_fields) if changed_fields else [],
+        }
+        if has_existing_plan:
+            context["instruction"] = (
+                "The user already has a plan. Only call tools whose inputs are affected "
+                "by the changed fields. If nothing changed, call no tools."
             )
 
-            # Extract tool names from Claude's tool_use blocks
-            blocks = normalize_blocks(response.content)
-            proposed_tools = [
-                b["name"] for b in blocks
-                if b.get("type") == "tool_use" and b.get("name")
-            ]
+        loop_messages: list[dict[str, Any]] = [
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False)}
+        ]
 
-            if proposed_tools:
-                return {"gather_tools": sorted(set(proposed_tools))}
+        try:
+            for _round in range(2):  # max 2 rounds
+                response = self.client.messages.create(
+                    model=self.model,
+                    max_tokens=1000,
+                    system=TOOL_PLANNING_PROMPT,
+                    tools=gather_tools,
+                    messages=loop_messages,
+                )
+
+                blocks = normalize_blocks(response.content)
+                tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
+
+                if not tool_uses:
+                    break  # Claude is done proposing tools
+
+                # Emit tool_started events
+                for tu in tool_uses:
+                    events.append(AgentEvent(
+                        type="tool_started",
+                        tool_name=tu["name"],
+                        message=f"Running {tu['name']}",
+                    ))
+
+                # Add Claude's full response to message history (required by API)
+                loop_messages.append({"role": "assistant", "content": response.content})
+
+                # Execute all proposed tools in parallel
+                gather_specs = [
+                    (tu["name"], tu.get("input", {}))
+                    for tu in tool_uses
+                ]
+                results = execute_tools_parallel(gather_specs)
+
+                # Build tool_result blocks and close the loop
+                tool_result_blocks: list[dict[str, Any]] = []
+                for tu in tool_uses:
+                    name = tu.get("name", "")
+                    tool_id = tu.get("id", "")
+                    if name in results:
+                        status, result = results[name]
+                        if status == "ok":
+                            tool_payloads[name] = result
+                            events.append(AgentEvent(
+                                type="tool_completed", tool_name=name, payload=result
+                            ))
+                            # Truncate to stay within token budget
+                            result_str = json.dumps(result, ensure_ascii=False)
+                            if len(result_str) > 4000:
+                                result_str = result_str[:4000] + "...[truncated]"
+                            tool_result_blocks.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": result_str,
+                            })
+                        else:
+                            events.append(AgentEvent(
+                                type="tool_completed", tool_name=name, payload={"error": result}
+                            ))
+                            tool_result_blocks.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "is_error": True,
+                                "content": str(result),
+                            })
+
+                # Return results to Claude — this is what closes the loop
+                if tool_result_blocks:
+                    loop_messages.append({"role": "user", "content": tool_result_blocks})
+
         except Exception:  # pragma: no cover
             pass
 
-        # Deterministic fallback: use field-dependency mapping
-        return build_tool_plan(changed_fields, has_existing_plan)
+        # Deterministic fallback: if the loop produced no base data, run standard plan
+        base_tools = {"get_weather", "get_hotels", "get_restaurants", "get_experiences"}
+        if not any(k in tool_payloads for k in base_tools):
+            fallback_plan = build_tool_plan(changed_fields, has_existing_plan)
+            fallback_specs = [
+                (name, inp)
+                for name in fallback_plan["gather_tools"]
+                if (inp := build_tool_input(name, brief, previous)) is not None
+            ]
+            if fallback_specs:
+                for name, _ in fallback_specs:
+                    events.append(AgentEvent(
+                        type="tool_started", tool_name=name, message=f"Running {name}"
+                    ))
+                fallback_results = execute_tools_parallel(fallback_specs)
+                for name, (status, result) in fallback_results.items():
+                    if status == "ok":
+                        tool_payloads[name] = result
+                        events.append(AgentEvent(
+                            type="tool_completed", tool_name=name, payload=result
+                        ))
+
+        return tool_payloads, events
 
 
 def _issue_score(issues: list[dict[str, Any]]) -> int:

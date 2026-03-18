@@ -24,10 +24,11 @@ from src.tools.schemas import (
 # ---------------------------------------------------------------------------
 
 FIELD_TOOL_DEPENDENCIES: dict[str, set[str]] = {
-    "destination": {"get_weather", "get_hotels", "get_restaurants", "get_experiences"},
-    "dates_or_month": {"get_weather"},
-    "travel_party": {"get_experiences"},
-    "budget": {"get_hotels", "get_restaurants"},
+    "destination": {"get_weather", "get_hotels", "get_restaurants", "get_experiences",
+                    "get_visa_requirements", "estimate_budget", "get_packing_suggestions"},
+    "dates_or_month": {"get_weather", "get_packing_suggestions"},
+    "travel_party": {"get_experiences", "estimate_budget"},
+    "budget": {"get_hotels", "get_restaurants", "estimate_budget"},
     "hotel_preference": {"get_hotels"},
     "neighborhood_preference": {"get_hotels", "get_restaurants"},
     "priorities": {"get_restaurants", "get_experiences"},
@@ -145,6 +146,13 @@ def prepare_candidate_context(
 
     selected_hotel = ranked_hotels[0] if ranked_hotels else (previous.selected_hotel if previous else None)
 
+    geo_clusters = compute_neighborhood_clusters(
+        selected_hotel,
+        ranked_restaurants,
+        ranked_experiences,
+        brief.trip_length_days or 1,
+    )
+
     return {
         "hotels": hotels,
         "restaurants": restaurants,
@@ -153,6 +161,64 @@ def prepare_candidate_context(
         "ranked_restaurants": ranked_restaurants,
         "ranked_experiences": ranked_experiences,
         "selected_hotel": selected_hotel,
+        "geo_clusters": geo_clusters,
+    }
+
+
+def compute_neighborhood_clusters(
+    selected_hotel: HotelOption | None,
+    ranked_restaurants: list[RestaurantOption],
+    ranked_experiences: list[ExperienceOption],
+    trip_length_days: int,
+) -> dict[str, Any]:
+    """Group venues by neighborhood and suggest a day-by-day geographic routing plan.
+
+    Returns a mapping that guides Claude to cluster each day around one or two
+    neighborhoods — minimising unnecessary travel across the city.
+    """
+    if not selected_hotel:
+        return {}
+
+    hotel_neighborhood = selected_hotel.neighborhood
+
+    # Tally venue counts per neighborhood
+    neighborhood_tally: dict[str, int] = {}
+    neighborhood_venues: dict[str, list[dict[str, str]]] = {}
+
+    for r in ranked_restaurants:
+        n = r.neighborhood or "unknown"
+        neighborhood_tally[n] = neighborhood_tally.get(n, 0) + 1
+        neighborhood_venues.setdefault(n, []).append({"type": "restaurant", "name": r.name})
+
+    for e in ranked_experiences:
+        n = e.neighborhood or "unknown"
+        neighborhood_tally[n] = neighborhood_tally.get(n, 0) + 1
+        neighborhood_venues.setdefault(n, []).append({"type": "experience", "name": e.name})
+
+    # Sort neighborhoods richest first, hotel neighborhood always first on Day 1
+    sorted_neighborhoods = sorted(
+        neighborhood_tally.items(),
+        key=lambda kv: (0 if kv[0] == hotel_neighborhood else -kv[1]),
+    )
+    distinct_areas = [n for n, _ in sorted_neighborhoods]
+
+    # Build a day-by-day neighborhood plan
+    day_plan: list[dict[str, Any]] = []
+    for day_num in range(1, trip_length_days + 1):
+        if day_num == 1:
+            anchor = hotel_neighborhood
+            note = "Arrival day — stay close to hotel, light schedule."
+        else:
+            idx = (day_num - 1) % max(len(distinct_areas), 1)
+            anchor = distinct_areas[idx]
+            note = f"Cluster activities in {anchor} and adjacent areas."
+
+        day_plan.append({"day": day_num, "anchor_neighborhood": anchor, "note": note})
+
+    return {
+        "hotel_neighborhood": hotel_neighborhood,
+        "day_neighborhood_plan": day_plan,
+        "neighborhood_venue_counts": neighborhood_tally,
     }
 
 
@@ -172,6 +238,12 @@ def payloads_from_previous(itinerary: ItineraryDraft | None) -> dict[str, Any]:
         payloads["get_experiences"] = [experience.model_dump(mode="json") for experience in itinerary.experiences]
     if itinerary.days:
         payloads["get_daily_structure"] = [day.model_dump(mode="json") for day in itinerary.days]
+    if itinerary.budget_estimate:
+        payloads["estimate_budget"] = itinerary.budget_estimate.model_dump(mode="json")
+    if itinerary.visa_requirements:
+        payloads["get_visa_requirements"] = itinerary.visa_requirements.model_dump(mode="json")
+    if itinerary.packing_suggestions:
+        payloads["get_packing_suggestions"] = itinerary.packing_suggestions.model_dump(mode="json")
     return payloads
 
 

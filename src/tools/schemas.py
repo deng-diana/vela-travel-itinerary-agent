@@ -165,6 +165,7 @@ class DayItem(BaseModel):
     neighborhood: str | None = None
     description: str
     booking_link: HttpUrl | None = None
+    transport_note: str | None = None  # e.g. "10-min walk from hotel" / "Subway Marunouchi Line, 3 stops"
 
 
 class DayPlan(BaseModel):
@@ -172,6 +173,78 @@ class DayPlan(BaseModel):
     theme: str
     summary: str
     items: list[DayItem] = Field(default_factory=list)
+    practical_tips: list[str] = Field(default_factory=list)  # e.g. ["Book ahead", "Cash only", "Opens 9am"]
+    day_estimated_cost_usd: int | None = None
+
+
+class BudgetInput(BaseModel):
+    destination: str = Field(..., min_length=2)
+    trip_length_days: int = Field(..., ge=1, le=30)
+    budget: BudgetTier = "mid"
+    travel_party: str | None = None
+    hotel_nightly_rate_usd: int | None = None
+    experience_daily_cost_usd: int | None = None
+
+
+class BudgetLineItem(BaseModel):
+    category: str
+    amount_usd: int
+    detail: str
+
+
+class BudgetEstimate(BaseModel):
+    destination: str
+    trip_length_days: int
+    budget_tier: BudgetTier
+    currency: str = "USD"
+    accommodation_total_usd: int
+    food_total_usd: int
+    activities_total_usd: int
+    transport_total_usd: int
+    misc_total_usd: int
+    grand_total_usd: int
+    daily_average_usd: int
+    line_items: list[BudgetLineItem] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class VisaInput(BaseModel):
+    destination: str = Field(..., min_length=2)
+    nationality: str = "US"
+
+
+class VisaRequirements(BaseModel):
+    destination: str
+    nationality: str
+    visa_type: str
+    max_stay_days: int | None = None
+    required_docs: list[str] = Field(default_factory=list)
+    processing_days: int | None = None
+    fee_usd: int | None = None
+    notes: str = ""
+    official_link: str | None = None
+
+
+class PackingInput(BaseModel):
+    destination: str = Field(..., min_length=2)
+    month: str = Field(..., min_length=3)
+    avg_temp_c: int | None = None
+    conditions_summary: str | None = None
+    trip_length_days: int = Field(default=7, ge=1, le=30)
+    activities: list[str] = Field(default_factory=list)
+    travel_party: str | None = None
+
+
+class PackingCategory(BaseModel):
+    category: str
+    items: list[str]
+
+
+class PackingSuggestions(BaseModel):
+    destination: str
+    month: str
+    weather_note: str = ""
+    categories: list[PackingCategory] = Field(default_factory=list)
 
 
 class ItineraryDraft(BaseModel):
@@ -187,4 +260,10 @@ class ItineraryDraft(BaseModel):
     restaurants: list[RestaurantOption] = Field(default_factory=list)
     experiences: list[ExperienceOption] = Field(default_factory=list)
     days: list[DayPlan] = Field(default_factory=list)
+    budget_estimate: BudgetEstimate | None = None
+    visa_requirements: VisaRequirements | None = None
+    packing_suggestions: PackingSuggestions | None = None
+    trip_tone: str | None = None          # e.g. "romantic & foodie" / "cultural & packed"
+    key_moments: list[str] = Field(default_factory=list)    # 3-5 standout trip highlights
+    cultural_notes: list[str] = Field(default_factory=list) # etiquette / local customs
     summary: str
