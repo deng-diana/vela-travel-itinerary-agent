@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import type { AgentStep, ChatMessage } from '../types'
 import { MarkdownMessage } from './MarkdownMessage'
 import { TypewriterText } from './TypewriterText'
+import { ThinkingDots } from './ThinkingDots'
 
 type ChatPanelProps = {
   sessionId: string | null
@@ -36,9 +37,13 @@ export function ChatPanel({
   }, [messages, liveNarration, steps])
 
   const activeStep = [...steps].reverse().find((step) => step.status === 'active') ?? null
-  const completedSteps = steps.filter((step) => step.status === 'completed').slice().reverse()
+  const completedSteps = steps
+    .filter((step) => step.status === 'completed')
+    .slice()
+    .reverse()
   const visibleMessages = showConversationHistory ? messages : messages.slice(-2)
   const hiddenMessageCount = Math.max(messages.length - visibleMessages.length, 0)
+  const showThinking = isStreaming && !liveNarration && !activeStep
 
   return (
     <section className="flex min-h-[calc(100vh-2rem)] flex-col rounded-[32px] border border-slate-800 bg-slate-900/85 lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] self-start overflow-hidden">
@@ -144,26 +149,32 @@ export function ChatPanel({
                 )}
               </article>
             ))}
+
+            {showThinking ? <ThinkingDots /> : null}
+
             <div ref={transcriptEndRef} />
           </div>
         </div>
       </div>
 
       <div className="border-t border-slate-800 bg-slate-900/95 px-5 py-5">
-        <form className="space-y-3" onSubmit={onSubmit}>
-          <textarea
-            className="min-h-28 w-full rounded-[24px] border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 outline-none"
-            value={input}
-            onChange={(event) => onInputChange(event.target.value)}
-            placeholder="Refine the trip, change the pace, or add a new preference..."
-          />
-          <div className="flex items-center justify-end gap-3">
+        <form onSubmit={onSubmit}>
+          <div className="relative">
+            <textarea
+              className="min-h-24 w-full rounded-[24px] border border-slate-700 bg-slate-950 px-4 py-3 pr-14 text-sm text-slate-100 outline-none"
+              value={input}
+              onChange={(event) => onInputChange(event.target.value)}
+              placeholder="Refine the trip, change the pace, or add a new preference..."
+            />
             <button
-              className="rounded-[18px] bg-emerald-400 px-5 py-3 font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+              className="absolute bottom-2.5 right-2.5 flex h-9 w-9 items-center justify-center rounded-full bg-emerald-400 text-slate-950 transition-colors disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
               disabled={isStreaming || !input.trim()}
               type="submit"
+              aria-label="Send"
             >
-              {isStreaming ? 'Planning...' : 'Send'}
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4.5 w-4.5">
+                <path d="M3.105 2.288a.75.75 0 0 0-.826.95l1.414 4.926A1.5 1.5 0 0 0 5.135 9.25h6.115a.75.75 0 0 1 0 1.5H5.135a1.5 1.5 0 0 0-1.442 1.086l-1.414 4.926a.75.75 0 0 0 .826.95l14.095-5.637a.75.75 0 0 0 0-1.4L3.105 2.288Z" />
+              </svg>
             </button>
           </div>
         </form>

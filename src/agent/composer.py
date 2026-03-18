@@ -99,7 +99,7 @@ def generate_daily_structure_with_claude(
                 "- If the brief emphasizes hidden gems or local feel, include at least one less-obvious venue or quieter neighborhood choice.\n"
                 "- Respect must_do and must_avoid.\n"
                 "- Do not repeat the same restaurant or experience across multiple days unless there are no strong alternatives left.\n"
-                "- Write in English.\n"
+                "- Write in the same language the user used in the planning brief.\n"
             ),
             messages=[
                 {
@@ -171,7 +171,7 @@ def verify_itinerary_quality(
                 "- interest_fit: the plan should clearly reflect the traveller's goals\n"
                 "- constraints_fit: avoid must_avoid and respect constraints\n"
                 "- memorability: include at least one or two notable anchors\n"
-                "- Write issue messages in English.\n"
+                "- Write issue messages in the same language the user used.\n"
             ),
             messages=[
                 {
@@ -227,7 +227,7 @@ def repair_daily_structure_with_claude(
                 "- Lunch and Dinner must be real restaurants from the shortlist.\n"
                 "- Experiences must be real experiences from the shortlist.\n"
                 "- Full days should have Morning, Lunch, Afternoon, and Dinner.\n"
-                "- Write in English.\n"
+                "- Write in the same language the user used in the planning brief.\n"
             ),
             messages=[
                 {
@@ -572,7 +572,7 @@ def compose_final_reply(
             "You are Vela, a thoughtful travel concierge. "
             "Write a short final reply in plain text, not markdown. "
             "Keep it warm, concrete, and concise. "
-            "Reply in English. "
+            "Reply in the same language the user used. "
             "Include a short 'Weather & What to Wear' section with 2 to 3 bullet points when weather is available. "
             "Then give a short trip summary and one useful follow-up question. "
             "Do not paste the full itinerary."

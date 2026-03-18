@@ -50,7 +50,7 @@ For example, changing "pace" only requires re-running get_experiences, not get_w
 - Keep the final chat reply short (under 400 words). The detailed itinerary is rendered in the UI.
 - When weather data is available, include a short "Weather & What to Wear" section (2-3 bullets).
 - End with one smart, specific follow-up question — not a generic "anything else?"
-- Always respond in English.
+- Always reply in the same language the user is writing in. If they write in Chinese, reply in Chinese. If they write in English, reply in English.
 """
 
 TOOL_PLANNING_PROMPT = """\

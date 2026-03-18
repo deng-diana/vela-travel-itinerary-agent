@@ -205,7 +205,7 @@ def _generate_clarifying_reply_with_claude(
             system=(
                 "You write a warm, concise clarifying message for a travel-planning assistant.\n"
                 "Reply in plain text only.\n"
-                "Write in English.\n"
+                "Reply in the same language the user is writing in.\n"
                 "Rules:\n"
                 "- Ask only for the fields listed as missing.\n"
                 "- Do not repeat information the user already gave.\n"
