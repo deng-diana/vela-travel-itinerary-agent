@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
@@ -80,6 +80,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [showHistory, setShowHistory] = useState(false)
+  const [showConversationHistory, setShowConversationHistory] = useState(false)
   const [workspaceMode, setWorkspaceMode] = useState(false)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -94,13 +95,10 @@ function App() {
 
     setError(null)
     setIsStreaming(true)
+    setInput('')
     setMessages((current) => [...current, { role: 'user', text: trimmed }])
     setSteps([])
-    setLiveNarration(
-      detectInputLanguage(trimmed) === 'zh'
-        ? '我先读一下你的需求，再决定下一步。'
-        : 'Let me read your request and decide the next move.'
-    )
+    setLiveNarration('')
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -145,7 +143,6 @@ function App() {
       setLiveNarration('')
     } finally {
       setIsStreaming(false)
-      setInput('')
     }
   }
 
@@ -240,6 +237,19 @@ function App() {
 
   const activeStep = [...steps].reverse().find((step) => step.status === 'active') ?? null
   const completedSteps = steps.filter((step) => step.status === 'completed').slice().reverse()
+  const visibleMessages = showConversationHistory ? messages : messages.slice(-2)
+  const hiddenMessageCount = Math.max(messages.length - visibleMessages.length, 0)
+  const conversationLanguage = detectConversationLanguage(messages)
+  const landingPlaceholder =
+    messages.length === 0
+      ? conversationLanguage === 'zh'
+        ? '你想去哪里、玩几天、这趟最重要的目标是什么？'
+        : 'Where do you want to go, how long is the trip, and what matters most?'
+      : conversationLanguage === 'zh'
+        ? '继续补充上面的问题，先告诉我你已经确定的部分就可以。'
+        : 'Continue with the details above. You can reply with just the parts you already know.'
+  const landingButtonLabel =
+    messages.length === 0 ? (conversationLanguage === 'zh' ? '开始规划' : 'Start planning') : conversationLanguage === 'zh' ? '继续' : 'Continue'
 
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
@@ -282,7 +292,11 @@ function App() {
                         <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">
                           {message.role === 'user' ? 'You' : 'Vela'}
                         </div>
-                        <div className="whitespace-pre-line">{message.text}</div>
+                        {message.role === 'assistant' ? (
+                          <MarkdownMessage text={message.text} />
+                        ) : (
+                          <div className="whitespace-pre-line">{message.text}</div>
+                        )}
                       </article>
                     ))}
 
@@ -301,7 +315,7 @@ function App() {
                       className="min-h-40 w-full rounded-[24px] border border-slate-800 bg-slate-950 px-5 py-4 text-base text-slate-100 outline-none"
                       value={input}
                       onChange={(event) => setInput(event.target.value)}
-                      placeholder="Where do you want to go, what kind of trip do you want, and what should Vela optimize for?"
+                      placeholder={landingPlaceholder}
                     />
                     <div className="flex items-center justify-end">
                       <button
@@ -309,7 +323,7 @@ function App() {
                         disabled={isStreaming || !input.trim()}
                         type="submit"
                       >
-                        Start planning
+                        {landingButtonLabel}
                       </button>
                     </div>
                   </form>
@@ -326,7 +340,7 @@ function App() {
             transition={{ duration: 0.35, ease: 'easeOut' }}
             className="mx-auto grid min-h-screen max-w-[1600px] gap-4 p-4 lg:grid-cols-[380px_minmax(0,1fr)]"
           >
-            <section className="flex min-h-[calc(100vh-2rem)] flex-col rounded-[32px] border border-slate-800 bg-slate-900/85">
+            <section className="flex min-h-[calc(100vh-2rem)] flex-col rounded-[32px] border border-slate-800 bg-slate-900/85 lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)] self-start overflow-hidden">
               <div className="border-b border-slate-800 px-5 py-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -388,28 +402,46 @@ function App() {
                 </div>
               </div>
 
-              <div className="flex-1 overflow-auto px-5 py-5">
-                <div className="space-y-3">
-                  {messages.map((message, index) => (
-                    <article
-                      key={`${message.role}-${index}`}
-                      className={`rounded-[24px] px-4 py-4 text-sm leading-7 ${
-                        message.role === 'user'
-                          ? 'ml-6 bg-emerald-500/18 text-emerald-50'
-                          : 'mr-4 border border-slate-700 bg-slate-950 text-slate-200'
-                      }`}
+              <div className="flex-1 overflow-hidden px-5 py-5">
+                <div className="mb-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Conversation</p>
+                    <p className="mt-1 text-sm text-slate-400">Current exchange and planning feedback.</p>
+                  </div>
+                  {messages.length > 2 ? (
+                    <button
+                      className="rounded-full border border-slate-800 bg-slate-950 px-3 py-1 text-[11px] uppercase tracking-[0.18em] text-slate-400"
+                      onClick={() => setShowConversationHistory((current) => !current)}
+                      type="button"
                     >
-                      <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                        {message.role === 'user' ? 'You' : 'Vela'}
-                      </div>
-                      {message.role === 'assistant' ? (
-                        <TypewriterText text={message.text} animate={index === messages.length - 1 && !isStreaming} />
-                      ) : (
-                        <div className="whitespace-pre-line">{message.text}</div>
-                      )}
-                    </article>
-                  ))}
-                  <div ref={transcriptEndRef} />
+                      {showConversationHistory ? 'Hide history' : `Show history (${hiddenMessageCount})`}
+                    </button>
+                  ) : null}
+                </div>
+
+                <div className="h-full overflow-auto">
+                  <div className="space-y-3 pb-4">
+                    {visibleMessages.map((message, index) => (
+                      <article
+                        key={`${message.role}-${index}`}
+                        className={`rounded-[24px] px-4 py-4 text-sm leading-7 ${
+                          message.role === 'user'
+                            ? 'ml-6 bg-emerald-500/18 text-emerald-50'
+                            : 'mr-4 border border-slate-700 bg-slate-950 text-slate-200'
+                        }`}
+                      >
+                        <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">
+                          {message.role === 'user' ? 'You' : 'Vela'}
+                        </div>
+                        {message.role === 'assistant' ? (
+                          <MarkdownMessage text={message.text} />
+                        ) : (
+                          <div className="whitespace-pre-line">{message.text}</div>
+                        )}
+                      </article>
+                    ))}
+                    <div ref={transcriptEndRef} />
+                  </div>
                 </div>
               </div>
 
@@ -421,8 +453,7 @@ function App() {
                     onChange={(event) => setInput(event.target.value)}
                     placeholder="Refine the trip, change the pace, or add a new preference..."
                   />
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-xs text-slate-500">Keep the conversation moving without losing the plan.</p>
+                  <div className="flex items-center justify-end gap-3">
                     <button
                       className="rounded-[18px] bg-emerald-400 px-5 py-3 font-medium text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                       disabled={isStreaming || !input.trim()}
@@ -566,6 +597,11 @@ function buildPhotoUrl(photoName?: string | null) {
   return `${API_BASE_URL}/places/photo?name=${encodeURIComponent(photoName)}`
 }
 
+function detectConversationLanguage(messages: ChatMessage[]): 'zh' | 'en' {
+  const sample = messages.map((message) => message.text).join(' ')
+  return /[\u4e00-\u9fff]/.test(sample) ? 'zh' : 'en'
+}
+
 function compactSummary(summary: string) {
   const normalized = summary.replace(/#+\s*/g, ' ').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
   if (!normalized) return ''
@@ -589,6 +625,17 @@ function sameVenueTitle(left: string, right: string) {
   return a === b || a.includes(b) || b.includes(a)
 }
 
+function normalizeLink(value?: string | null) {
+  if (!value) return ''
+  return value.replace(/\/+$/, '')
+}
+
+function sameVenueLink(left?: string | null, right?: string | null) {
+  const a = normalizeLink(left)
+  const b = normalizeLink(right)
+  return Boolean(a && b && a === b)
+}
+
 type ResolvedVenue = {
   title: string
   subtitle: string
@@ -599,7 +646,11 @@ type ResolvedVenue = {
 }
 
 function resolveVenue(item: DayItem, itinerary: ItineraryDraft): ResolvedVenue | null {
-  const hotel = itinerary.hotels.find((entry) => sameVenueTitle(entry.name, item.title))
+  const hotel = itinerary.hotels.find(
+    (entry) =>
+      sameVenueTitle(entry.name, item.title) ||
+      sameVenueLink(entry.maps_url || entry.affiliate_link, item.booking_link),
+  )
   if (hotel) {
     return {
       title: hotel.name,
@@ -611,7 +662,11 @@ function resolveVenue(item: DayItem, itinerary: ItineraryDraft): ResolvedVenue |
     }
   }
 
-  const restaurant = itinerary.restaurants.find((entry) => sameVenueTitle(entry.name, item.title))
+  const restaurant = itinerary.restaurants.find(
+    (entry) =>
+      sameVenueTitle(entry.name, item.title) ||
+      sameVenueLink(entry.maps_url || entry.reservation_link, item.booking_link),
+  )
   if (restaurant) {
     return {
       title: restaurant.name,
@@ -623,7 +678,11 @@ function resolveVenue(item: DayItem, itinerary: ItineraryDraft): ResolvedVenue |
     }
   }
 
-  const experience = itinerary.experiences.find((entry) => sameVenueTitle(entry.name, item.title))
+  const experience = itinerary.experiences.find(
+    (entry) =>
+      sameVenueTitle(entry.name, item.title) ||
+      sameVenueLink(entry.maps_url || entry.booking_link, item.booking_link),
+  )
   if (experience) {
     return {
       title: experience.name,
@@ -710,6 +769,75 @@ function TypewriterText({ text, animate }: { text: string; animate: boolean }) {
   return <span className={`whitespace-pre-line ${animate ? 'agent-shimmer-text' : ''}`}>{displayText}</span>
 }
 
+function MarkdownMessage({ text }: { text: string }) {
+  const blocks = text.trim().split(/\n\s*\n/).filter(Boolean)
+
+  return (
+    <div className="space-y-3 text-sm leading-7">
+      {blocks.map((block, index) => {
+        const lines = block.split('\n').map((line) => line.trim()).filter(Boolean)
+        const unordered = lines.every((line) => /^[-*]\s+/.test(line))
+        const ordered = lines.every((line) => /^\d+\.\s+/.test(line))
+
+        if (unordered) {
+          return (
+            <ul key={`ul-${index}`} className="space-y-2 pl-5">
+              {lines.map((line, lineIndex) => (
+                <li key={`li-${index}-${lineIndex}`} className="list-disc text-slate-100">
+                  {renderInlineMarkdown(line.replace(/^[-*]\s+/, ''))}
+                </li>
+              ))}
+            </ul>
+          )
+        }
+
+        if (ordered) {
+          return (
+            <ol key={`ol-${index}`} className="space-y-2 pl-5">
+              {lines.map((line, lineIndex) => (
+                <li key={`oli-${index}-${lineIndex}`} className="list-decimal text-slate-100">
+                  {renderInlineMarkdown(line.replace(/^\d+\.\s+/, ''))}
+                </li>
+              ))}
+            </ol>
+          )
+        }
+
+        return (
+          <p key={`p-${index}`} className="text-slate-100">
+            {lines.map((line, lineIndex) => (
+              <span key={`line-${index}-${lineIndex}`}>
+                {renderInlineMarkdown(line)}
+                {lineIndex < lines.length - 1 ? <br /> : null}
+              </span>
+            ))}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+function renderInlineMarkdown(text: string) {
+  const parts = text.split(/(\*\*.*?\*\*)/g).filter(Boolean)
+
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return (
+        <strong key={`strong-${index}`} className="font-semibold text-white">
+          {part.slice(2, -2)}
+        </strong>
+      )
+    }
+
+    return <InlineText key={`text-${index}`}>{part}</InlineText>
+  })
+}
+
+function InlineText({ children }: { children: ReactNode }) {
+  return <>{children}</>
+}
+
 function makeActiveStep(toolName: string): AgentStep {
   const detailByTool: Record<string, string> = {
     get_weather: 'Checking live destination weather and turning it into practical travel context.',
@@ -754,10 +882,6 @@ function prettyToolName(toolName: string): string {
   }
 
   return names[toolName] ?? toolName
-}
-
-function detectInputLanguage(value: string) {
-  return /[\u4e00-\u9fff]/.test(value) ? 'zh' : 'en'
 }
 
 function parseSseChunk(chunk: string): { event: string; data: unknown } | null {

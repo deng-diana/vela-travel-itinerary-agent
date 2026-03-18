@@ -35,6 +35,8 @@ The agent should:
 
 The first response should not blindly generate a plan. It should confirm missing constraints such as neighborhood preference, accommodation style, dietary restrictions, or pace.
 
+The intake layer should also infer clear soft constraints from natural language. If the user already says things like "not too packed", "avoid long queues", or mentions safety concerns, the agent should treat those as known constraints instead of asking the same question again.
+
 Clarifying questions should be concrete and easy to answer. For example:
 
 - "Do you want a slower pace, or do you want to fit in as much as possible?"
@@ -70,9 +72,12 @@ The agent should not assume the first draft is good enough. Before the final iti
 - limited repetition
 - geographically sensible clustering
 - pacing that matches the brief
+- valid venue typing, so restaurants are used for meals and experiences are used for activities
+- a usable day structure with clear morning, lunch, afternoon, and dinner anchors on full days
 - strong fit to the traveller's goals
 - respect for stated constraints
 - at least one or two memorable anchors
+- better local or hidden-gem signal when the traveller explicitly asks for it
 
 If the draft fails the rubric, the system should repair it rather than showing a low-value plan.
 

@@ -22,8 +22,8 @@ def get_experiences(input_data: ExperienceSearchInput) -> list[ExperienceOption]
         return get_mock_experiences(input_data)
 
     try:
-        query = build_text_query(input_data)
-        places = search_places(query=query, api_key=api_key)
+        queries = build_text_queries(input_data)
+        places = search_places(queries=queries, api_key=api_key)
         experiences = [map_place_to_experience(place, input_data) for place in places]
         experiences = [experience for experience in experiences if experience is not None]
         return experiences or get_mock_experiences(input_data)
@@ -31,7 +31,7 @@ def get_experiences(input_data: ExperienceSearchInput) -> list[ExperienceOption]
         return get_mock_experiences(input_data)
 
 
-def build_text_query(input_data: ExperienceSearchInput) -> str:
+def build_text_queries(input_data: ExperienceSearchInput) -> list[str]:
     parts: list[str] = []
 
     if input_data.interests:
@@ -44,37 +44,60 @@ def build_text_query(input_data: ExperienceSearchInput) -> str:
 
     parts.append(f"in {input_data.destination}")
 
-    return " ".join(parts)
+    queries = [" ".join(parts)]
+    joined_interest_text = " ".join(input_data.interests).lower()
+
+    if any(token in joined_interest_text for token in ("hidden", "local", "gem", "independent", "neighborhood")):
+        queries.append(f"hidden gems in {input_data.destination}")
+        queries.append(f"local neighborhood walks in {input_data.destination}")
+
+    if any(token in joined_interest_text for token in ("art", "design", "culture", "museum", "gallery")):
+        queries.append(f"independent galleries and design spots in {input_data.destination}")
+
+    return list(dict.fromkeys(query for query in queries if query.strip()))
 
 
-def search_places(query: str, api_key: str) -> list[dict]:
-    response = httpx.post(
-        TEXT_SEARCH_URL,
-        headers={
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": ",".join(
-                [
-                    "places.id",
-                    "places.displayName",
-                    "places.formattedAddress",
-                    "places.shortFormattedAddress",
-                    "places.googleMapsUri",
-                    "places.primaryTypeDisplayName",
-                    "places.photos",
-                ]
-            ),
-        },
-        json={
-            "textQuery": query,
-            "languageCode": "en",
-            "maxResultCount": 8,
-        },
-        timeout=20.0,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    return payload.get("places", [])
+def search_places(queries: list[str], api_key: str) -> list[dict]:
+    all_places: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for query in queries:
+        response = httpx.post(
+            TEXT_SEARCH_URL,
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": api_key,
+                "X-Goog-FieldMask": ",".join(
+                    [
+                        "places.id",
+                        "places.displayName",
+                        "places.formattedAddress",
+                        "places.shortFormattedAddress",
+                        "places.googleMapsUri",
+                        "places.primaryTypeDisplayName",
+                        "places.rating",
+                        "places.userRatingCount",
+                        "places.photos",
+                    ]
+                ),
+            },
+            json={
+                "textQuery": query,
+                "languageCode": "en",
+                "maxResultCount": 8,
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        for place in payload.get("places", []):
+            place_id = place.get("id")
+            if not place_id or place_id in seen_ids:
+                continue
+            seen_ids.add(place_id)
+            all_places.append(place)
+
+    return all_places
 
 
 def map_place_to_experience(place: dict, input_data: ExperienceSearchInput) -> ExperienceOption | None:
@@ -98,6 +121,8 @@ def map_place_to_experience(place: dict, input_data: ExperienceSearchInput) -> E
         booking_link=maps_url,
         best_time=estimate_best_time(category),
         why_it_fits=build_why_it_fits(input_data, category, neighborhood),
+        rating=place.get("rating"),
+        user_rating_count=place.get("userRatingCount"),
         maps_url=maps_url,
         photo_name=photo_name,
         photo_attribution=photo_attribution,

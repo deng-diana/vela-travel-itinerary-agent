@@ -120,12 +120,15 @@ Vela now plans in three stages:
 1. Intake and readiness gate
    - Extract the trip brief from conversation
    - Detect missing required information
+   - Infer soft constraints from natural language, such as "not too packed", "avoid long queues", or safety concerns
    - Ask only the missing questions, using concrete examples and options
 2. Parallel gather
    - Once the brief is ready, gather weather, hotels, restaurants, and experiences in parallel
 3. Compose, verify, and adapt
    - Let Claude draft the itinerary structure from the gathered venue set
-   - Run a quality rubric to check coverage, geography, pace, duplication, and interest fit
+   - Rank and filter venue candidates so the plan favors stronger fits, lower repetition, and more local or hidden-gem texture when requested
+   - Run a quality rubric to check coverage, geography, pace, duplication, venue-type validity, and interest fit
+   - Prefer a usable day skeleton: Morning, Lunch, Afternoon, Dinner, with Evening when it adds value
    - Repair the draft if needed before showing it
    - When the user changes budget, pace, neighborhood, or priorities, selectively rerun only the affected tools
 

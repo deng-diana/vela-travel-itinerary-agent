@@ -44,7 +44,7 @@ def build_text_query(input_data: HotelSearchInput) -> str:
     if input_data.accommodation_type:
         parts.append(input_data.accommodation_type)
     else:
-        parts.append("hotels")
+        parts.append("boutique hotels")
 
     if input_data.preferred_neighborhood:
         parts.append(f"near {input_data.preferred_neighborhood}")
@@ -108,6 +108,8 @@ def map_place_to_hotel(place: dict, input_data: HotelSearchInput) -> HotelOption
         affiliate_link=maps_url,
         key_highlights=build_key_highlights(neighborhood, rating, user_rating_count, input_data),
         short_description=build_short_description(input_data, neighborhood, rating),
+        rating=rating,
+        user_rating_count=user_rating_count,
         maps_url=maps_url,
         photo_name=photo_name,
         photo_attribution=photo_attribution,

@@ -117,6 +117,8 @@ class HotelOption(BaseModel):
     affiliate_link: HttpUrl
     key_highlights: list[str] = Field(default_factory=list)
     short_description: str
+    rating: float | None = None
+    user_rating_count: int | None = None
     maps_url: HttpUrl | None = None
     photo_name: str | None = None
     photo_attribution: str | None = None
@@ -131,6 +133,8 @@ class RestaurantOption(BaseModel):
     must_order_dish: str | None = None
     reservation_link: HttpUrl
     why_it_fits: str
+    rating: float | None = None
+    user_rating_count: int | None = None
     maps_url: HttpUrl | None = None
     photo_name: str | None = None
     photo_attribution: str | None = None
@@ -147,6 +151,8 @@ class ExperienceOption(BaseModel):
     booking_link: HttpUrl
     best_time: str
     why_it_fits: str
+    rating: float | None = None
+    user_rating_count: int | None = None
     maps_url: HttpUrl | None = None
     photo_name: str | None = None
     photo_attribution: str | None = None

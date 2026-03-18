@@ -150,7 +150,7 @@ class AgentOrchestrator:
         tool_payloads["get_daily_structure"] = day_output
         yield AgentEvent(type="tool_completed", tool_name="get_daily_structure", payload=day_output)
 
-        itinerary = self._build_itinerary(tool_inputs, tool_payloads, state.last_itinerary)
+        itinerary = self._build_itinerary(tool_inputs, tool_payloads, state.last_itinerary, planning_context)
         if itinerary and patch.day_swap_request:
             itinerary = self._apply_day_swap_request(itinerary, patch.day_swap_request)
         if itinerary:
@@ -172,6 +172,12 @@ class AgentOrchestrator:
                     issues=verification["issues"],
                 )
                 if repaired_days:
+                    repaired_days = self._align_days_to_candidates(
+                        repaired_days,
+                        planning_context["selected_hotel"],
+                        planning_context["ranked_restaurants"],
+                        planning_context["ranked_experiences"],
+                    )
                     repaired_itinerary = itinerary.model_copy(
                         update={
                             "days": self._enrich_days(
@@ -287,6 +293,19 @@ class AgentOrchestrator:
             budget = self._extract_budget(lower_text)
             if budget:
                 patch_data["budget"] = budget
+
+        inferred_constraints = self._extract_constraints_from_text(normalized_text, lower_text)
+        if inferred_constraints:
+            existing_constraints = list(patch_data.get("constraints") or [])
+            for constraint in inferred_constraints:
+                if constraint not in existing_constraints:
+                    existing_constraints.append(constraint)
+            patch_data["constraints"] = existing_constraints
+
+        if patch.pace is None:
+            inferred_pace = self._extract_pace_from_text(lower_text)
+            if inferred_pace:
+                patch_data["pace"] = inferred_pace
 
         if not existing_brief.constraints and not existing_brief.constraints_confirmed:
             if patch.constraints is None and patch.constraints_confirmed is None:
@@ -631,6 +650,11 @@ class AgentOrchestrator:
         for avoid in brief.must_avoid:
             if self._normalize_text(avoid) in text:
                 score -= 6
+        score += self._rating_score(hotel.rating, hotel.user_rating_count)
+        if brief.budget == hotel.category:
+            score += 3
+        if hotel.photo_name:
+            score += 1
         return score
 
     def _score_restaurant(self, restaurant: RestaurantOption, brief: PlanningBrief) -> int:
@@ -655,6 +679,16 @@ class AgentOrchestrator:
         for avoid in brief.must_avoid:
             if self._normalize_text(avoid) in text:
                 score -= 6
+        score += self._rating_score(restaurant.rating, restaurant.user_rating_count)
+        score += self._hidden_gem_score(
+            title=restaurant.name,
+            category=restaurant.cuisine,
+            neighborhood=restaurant.neighborhood,
+            rating_count=restaurant.user_rating_count,
+            brief=brief,
+        )
+        if restaurant.photo_name:
+            score += 1
         return score
 
     def _score_experience(self, experience: ExperienceOption, brief: PlanningBrief) -> int:
@@ -669,10 +703,56 @@ class AgentOrchestrator:
         for avoid in brief.must_avoid:
             if self._normalize_text(avoid) in text:
                 score -= 6
+        score += self._rating_score(experience.rating, experience.user_rating_count)
+        score += self._hidden_gem_score(
+            title=experience.name,
+            category=experience.category,
+            neighborhood=experience.neighborhood,
+            rating_count=experience.user_rating_count,
+            brief=brief,
+        )
+        if brief.pace and experience.best_time.lower() == ("morning" if brief.pace == "packed" else "afternoon"):
+            score += 1
+        if experience.photo_name:
+            score += 1
         return score
 
     def _normalize_text(self, value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s]+", " ", value.lower())).strip()
+
+    def _rating_score(self, rating: float | None, rating_count: int | None) -> int:
+        score = 0
+        if rating is not None:
+            score += int(round((rating - 4.0) * 4))
+        if rating_count:
+            if rating_count >= 300:
+                score += 2
+            elif rating_count >= 100:
+                score += 1
+        return score
+
+    def _hidden_gem_score(
+        self,
+        title: str,
+        category: str,
+        neighborhood: str,
+        rating_count: int | None,
+        brief: PlanningBrief,
+    ) -> int:
+        preference_text = " ".join(brief.priorities + brief.style_notes + brief.must_do).lower()
+        if not any(token in preference_text for token in ("hidden", "local", "gem", "independent", "quiet", "neighborhood")):
+            return 0
+
+        score = 0
+        combined = f"{title} {category} {neighborhood}".lower()
+        if any(token in combined for token in ("independent", "bookstore", "gallery", "kissaten", "market", "backstreet", "local", "quiet", "neighborhood", "garden")):
+            score += 3
+        if rating_count:
+            if rating_count < 400:
+                score += 2
+            elif rating_count > 5000:
+                score -= 2
+        return score
 
     def _generate_daily_structure_with_claude(
         self,
@@ -694,12 +774,18 @@ class AgentOrchestrator:
                     '{"days":[{"day_number":1,"theme":"...","summary":"...","items":[{"time_label":"Morning","kind":"experience","title":"...","neighborhood":"...","description":"..."}]}]}.\n'
                     "Rules:\n"
                     "- Use only venues provided in the candidate lists.\n"
-                    "- Minimize repeats. Avoid reusing the same restaurant or experience unless the shortlist is too small.\n"
+                    "- Minimize repeats. Do not reuse the same restaurant or experience unless there are no strong alternatives.\n"
                     "- Keep each day geographically sensible.\n"
-                    "- Day 1 should be lighter and include the hotel plus one nearby meal.\n"
-                    "- Full days should usually include a morning anchor, lunch, one afternoon or evening anchor, and dinner when appropriate.\n"
+                    "- Day 1 should be lighter and include the hotel plus one nearby meal and a soft evening idea.\n"
+                    "- Full days should include Morning, Lunch, Afternoon, and Dinner. Evening is optional.\n"
+                    "- Morning and Afternoon should normally be experiences, walks, markets, museums, or neighborhood exploration.\n"
+                    "- Lunch and Dinner must be restaurants from the restaurant shortlist.\n"
+                    "- Never use a landmark, museum, or attraction as Lunch or Dinner.\n"
+                    "- Prefer concrete actions over vague notes. The user should know what to do in each time block.\n"
+                    "- Use the hotel's neighborhood as a base for Day 1 and one or more nearby anchors.\n"
                     "- If the brief emphasizes hidden gems or local feel, include at least one less-obvious venue or quieter neighborhood choice.\n"
                     "- Respect must_do and must_avoid.\n"
+                    "- Do not repeat the same restaurant or experience across multiple days unless there are no strong alternatives left.\n"
                     f"- Write in {'Chinese' if response_language == 'zh' else 'English'}.\n"
                 ),
                 messages=[
@@ -710,9 +796,11 @@ class AgentOrchestrator:
                                 "planning_brief": brief.model_dump(mode="json"),
                                 "weather": weather_payload,
                                 "selected_hotel": planning_context["selected_hotel"].model_dump(mode="json") if planning_context["selected_hotel"] else None,
-                                "candidate_hotels": [hotel.model_dump(mode="json") for hotel in planning_context["ranked_hotels"][:3]],
-                                "candidate_restaurants": [restaurant.model_dump(mode="json") for restaurant in planning_context["ranked_restaurants"][:8]],
-                                "candidate_experiences": [experience.model_dump(mode="json") for experience in planning_context["ranked_experiences"][:8]],
+                                "candidate_hotels": [self._hotel_brief_for_planning(hotel) for hotel in planning_context["ranked_hotels"][:3]],
+                                "candidate_restaurants": [self._restaurant_brief_for_planning(restaurant, brief) for restaurant in planning_context["ranked_restaurants"][:10]],
+                                "candidate_experiences": [self._experience_brief_for_planning(experience, brief) for experience in planning_context["ranked_experiences"][:10]],
+                                "restaurant_names": [restaurant.name for restaurant in planning_context["ranked_restaurants"][:10]],
+                                "experience_names": [experience.name for experience in planning_context["ranked_experiences"][:10]],
                                 "daily_input": daily_input.model_dump(mode="json"),
                             },
                             ensure_ascii=False,
@@ -726,6 +814,56 @@ class AgentOrchestrator:
             return days or None
         except Exception:  # pragma: no cover - graceful fallback
             return None
+
+    def _hotel_brief_for_planning(self, hotel: HotelOption) -> dict[str, Any]:
+        return {
+            "name": hotel.name,
+            "neighborhood": hotel.neighborhood,
+            "category": hotel.category,
+            "nightly_rate_usd": hotel.nightly_rate_usd,
+            "rating": hotel.rating,
+            "user_rating_count": hotel.user_rating_count,
+            "highlights": hotel.key_highlights,
+            "description": hotel.short_description,
+        }
+
+    def _restaurant_brief_for_planning(self, restaurant: RestaurantOption, brief: PlanningBrief) -> dict[str, Any]:
+        return {
+            "name": restaurant.name,
+            "cuisine": restaurant.cuisine,
+            "neighborhood": restaurant.neighborhood,
+            "price_range": restaurant.price_range,
+            "rating": restaurant.rating,
+            "user_rating_count": restaurant.user_rating_count,
+            "why_it_fits": restaurant.why_it_fits,
+            "hidden_gem_bias": self._hidden_gem_score(
+                restaurant.name,
+                restaurant.cuisine,
+                restaurant.neighborhood,
+                restaurant.user_rating_count,
+                brief,
+            ),
+        }
+
+    def _experience_brief_for_planning(self, experience: ExperienceOption, brief: PlanningBrief) -> dict[str, Any]:
+        return {
+            "name": experience.name,
+            "category": experience.category,
+            "neighborhood": experience.neighborhood,
+            "duration_hours": experience.duration_hours,
+            "estimated_cost_usd": experience.estimated_cost_usd,
+            "best_time": experience.best_time,
+            "rating": experience.rating,
+            "user_rating_count": experience.user_rating_count,
+            "why_it_fits": experience.why_it_fits,
+            "hidden_gem_bias": self._hidden_gem_score(
+                experience.name,
+                experience.category,
+                experience.neighborhood,
+                experience.user_rating_count,
+                brief,
+            ),
+        }
 
     def _verify_itinerary_quality(
         self,
@@ -790,6 +928,7 @@ class AgentOrchestrator:
             unique_neighborhoods = {item.neighborhood for item in real_items if item.neighborhood}
             restaurants = [item for item in real_items if item.kind == "restaurant"]
             experiences = [item for item in real_items if item.kind == "experience"]
+            labels = {item.time_label.lower() for item in real_items}
 
             minimum_items = 2 if day.day_number == 1 else 3
             if len(real_items) < minimum_items:
@@ -831,6 +970,68 @@ class AgentOrchestrator:
                         "repair_hint": "Add a museum, walk, neighborhood activity, or other notable experience.",
                     }
                 )
+
+            if day.day_number > 1 and "morning" not in labels:
+                issues.append(
+                    {
+                        "code": f"morning_day_{day.day_number}",
+                        "severity": 2,
+                        "message": f"Day {day.day_number} is missing a clear morning plan.",
+                        "repair_hint": "Add a strong morning anchor so the day can start with intention.",
+                    }
+                )
+
+            if day.day_number > 1 and "lunch" not in labels:
+                issues.append(
+                    {
+                        "code": f"lunch_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} is missing a lunch stop.",
+                        "repair_hint": "Add a lunch anchor that fits the neighborhood flow.",
+                    }
+                )
+
+            if day.day_number > 1 and "afternoon" not in labels:
+                issues.append(
+                    {
+                        "code": f"afternoon_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} is missing a clear afternoon anchor.",
+                        "repair_hint": "Add an afternoon experience or neighborhood activity that advances the day.",
+                    }
+                )
+
+            if day.day_number > 1 and "dinner" not in labels:
+                issues.append(
+                    {
+                        "code": f"dinner_day_{day.day_number}",
+                        "severity": 1,
+                        "message": f"Day {day.day_number} is missing a dinner plan.",
+                        "repair_hint": "Add a dinner stop that fits the area and keeps the day feeling complete.",
+                    }
+                )
+
+            for item in restaurants:
+                if not self._matches_restaurant_candidate(item.title, itinerary.restaurants):
+                    issues.append(
+                        {
+                            "code": f"invalid_restaurant_{day.day_number}_{self._normalize_text(item.title)}",
+                            "severity": 3,
+                            "message": f'"{item.title}" is being used as a restaurant, but it is not in the restaurant shortlist.',
+                            "repair_hint": "Replace it with an actual restaurant from the shortlisted dining options.",
+                        }
+                    )
+
+            for item in experiences:
+                if not self._matches_experience_candidate(item.title, itinerary.experiences):
+                    issues.append(
+                        {
+                            "code": f"invalid_experience_{day.day_number}_{self._normalize_text(item.title)}",
+                            "severity": 2,
+                            "message": f'"{item.title}" is being used as an experience, but it is not in the experience shortlist.',
+                            "repair_hint": "Replace it with a real experience from the shortlisted options.",
+                        }
+                    )
 
             if (brief.pace or "balanced") == "slow" and len(real_items) > 4:
                 issues.append(
@@ -881,6 +1082,20 @@ class AgentOrchestrator:
                     }
                 )
 
+        if len(itinerary.days) >= 3:
+            used_neighborhood_sets = [
+                tuple(sorted({item.neighborhood or "" for item in day.items if item.kind != "note"})) for day in itinerary.days
+            ]
+            if len(set(used_neighborhood_sets)) <= max(1, len(itinerary.days) - 2):
+                issues.append(
+                    {
+                        "code": "neighborhood_variety",
+                        "severity": 1,
+                        "message": "Too many days feel geographically similar.",
+                        "repair_hint": "Vary the neighborhoods or route logic so each day has a clearer identity.",
+                    }
+                )
+
         return issues
 
     def _normalize_issue(self, issue: dict[str, Any]) -> dict[str, Any]:
@@ -922,6 +1137,9 @@ class AgentOrchestrator:
                     "- Improve day coverage.\n"
                     "- Tighten geography.\n"
                     "- Match the requested pace.\n"
+                    "- Lunch and Dinner must be real restaurants from the shortlist.\n"
+                    "- Experiences must be real experiences from the shortlist.\n"
+                    "- Full days should have Morning, Lunch, Afternoon, and Dinner.\n"
                     f"- Write in {'Chinese' if response_language == 'zh' else 'English'}.\n"
                 ),
                 messages=[
@@ -932,9 +1150,11 @@ class AgentOrchestrator:
                                 "planning_brief": brief.model_dump(mode="json"),
                                 "issues": issues,
                                 "current_days": [day.model_dump(mode="json") for day in itinerary.days],
-                                "selected_hotel": planning_context["selected_hotel"].model_dump(mode="json") if planning_context["selected_hotel"] else None,
-                                "candidate_restaurants": [restaurant.model_dump(mode="json") for restaurant in planning_context["ranked_restaurants"][:8]],
-                                "candidate_experiences": [experience.model_dump(mode="json") for experience in planning_context["ranked_experiences"][:8]],
+                                "selected_hotel": self._hotel_brief_for_planning(planning_context["selected_hotel"]) if planning_context["selected_hotel"] else None,
+                                "candidate_restaurants": [self._restaurant_brief_for_planning(restaurant, brief) for restaurant in planning_context["ranked_restaurants"][:10]],
+                                "candidate_experiences": [self._experience_brief_for_planning(experience, brief) for experience in planning_context["ranked_experiences"][:10]],
+                                "restaurant_names": [restaurant.name for restaurant in planning_context["ranked_restaurants"][:10]],
+                                "experience_names": [experience.name for experience in planning_context["ranked_experiences"][:10]],
                             },
                             ensure_ascii=False,
                         ),
@@ -953,6 +1173,7 @@ class AgentOrchestrator:
         tool_inputs: dict[str, dict[str, Any]],
         tool_payloads: dict[str, Any],
         previous: ItineraryDraft | None,
+        planning_context: dict[str, Any] | None = None,
     ) -> ItineraryDraft | None:
         if "get_daily_structure" not in tool_payloads:
             return previous
@@ -983,6 +1204,14 @@ class AgentOrchestrator:
             hotels[0] if hotels else (previous.selected_hotel if previous else None),
         )
 
+        if planning_context:
+            days = self._align_days_to_candidates(
+                days,
+                selected_hotel,
+                planning_context["ranked_restaurants"],
+                planning_context["ranked_experiences"],
+            )
+
         days = self._enrich_days(days, selected_hotel, restaurants, experiences)
 
         return ItineraryDraft(
@@ -1008,19 +1237,15 @@ class AgentOrchestrator:
         restaurants: list[RestaurantOption],
         experiences: list[ExperienceOption],
     ) -> list[DayPlan]:
-        restaurant_by_name = {restaurant.name.lower(): restaurant for restaurant in restaurants}
-        experience_by_name = {experience.name.lower(): experience for experience in experiences}
-
         enriched_days: list[DayPlan] = []
         for day in days:
             enriched_items = []
             for item in day.items:
-                lowered_title = item.title.lower()
-
-                if item.kind == "hotel" and selected_hotel and lowered_title == selected_hotel.name.lower():
+                if item.kind == "hotel" and selected_hotel and self._normalize_text(item.title) == self._normalize_text(selected_hotel.name):
                     enriched_items.append(
                         item.model_copy(
                             update={
+                                "title": selected_hotel.name,
                                 "neighborhood": selected_hotel.neighborhood,
                                 "description": selected_hotel.short_description,
                                 "booking_link": selected_hotel.affiliate_link,
@@ -1029,42 +1254,111 @@ class AgentOrchestrator:
                     )
                     continue
 
-                if item.kind == "restaurant" and lowered_title in restaurant_by_name:
-                    restaurant = restaurant_by_name[lowered_title]
-                    description = (
-                        f"{restaurant.cuisine} in {restaurant.neighborhood}."
-                        if not restaurant.must_order_dish
-                        else f"{restaurant.cuisine} in {restaurant.neighborhood}. Signature: {restaurant.must_order_dish}."
-                    )
-                    enriched_items.append(
-                        item.model_copy(
-                            update={
-                                "neighborhood": restaurant.neighborhood,
-                                "description": description,
-                                "booking_link": restaurant.reservation_link,
-                            }
+                if item.kind == "restaurant":
+                    restaurant = self._find_option_by_title(item.title, restaurants)
+                    if restaurant:
+                        description = (
+                            f"{restaurant.cuisine} in {restaurant.neighborhood}."
+                            if not restaurant.must_order_dish
+                            else f"{restaurant.cuisine} in {restaurant.neighborhood}. Signature: {restaurant.must_order_dish}."
                         )
-                    )
-                    continue
+                        enriched_items.append(
+                            item.model_copy(
+                                update={
+                                    "title": restaurant.name,
+                                    "neighborhood": restaurant.neighborhood,
+                                    "description": description,
+                                    "booking_link": restaurant.reservation_link,
+                                }
+                            )
+                        )
+                        continue
 
-                if item.kind == "experience" and lowered_title in experience_by_name:
-                    experience = experience_by_name[lowered_title]
-                    enriched_items.append(
-                        item.model_copy(
-                            update={
-                                "neighborhood": experience.neighborhood,
-                                "description": experience.why_it_fits,
-                                "booking_link": experience.booking_link,
-                            }
+                if item.kind == "experience":
+                    experience = self._find_option_by_title(item.title, experiences)
+                    if experience:
+                        enriched_items.append(
+                            item.model_copy(
+                                update={
+                                    "title": experience.name,
+                                    "neighborhood": experience.neighborhood,
+                                    "description": experience.why_it_fits,
+                                    "booking_link": experience.booking_link,
+                                }
+                            )
                         )
-                    )
-                    continue
+                        continue
 
                 enriched_items.append(item)
 
             enriched_days.append(day.model_copy(update={"items": enriched_items}))
 
         return enriched_days
+
+    def _align_days_to_candidates(
+        self,
+        days: list[DayPlan],
+        selected_hotel: HotelOption | None,
+        ranked_restaurants: list[RestaurantOption],
+        ranked_experiences: list[ExperienceOption],
+    ) -> list[DayPlan]:
+        restaurant_uses: dict[str, int] = {}
+        experience_uses: dict[str, int] = {}
+
+        aligned_days: list[DayPlan] = []
+        for day in days:
+            aligned_items: list[DayItem] = []
+            for item in day.items:
+                if item.kind == "hotel" and selected_hotel:
+                    aligned_items.append(item.model_copy(update={"title": selected_hotel.name, "neighborhood": selected_hotel.neighborhood}))
+                    continue
+
+                if item.kind == "restaurant":
+                    restaurant = self._choose_balanced_candidate(item.title, ranked_restaurants, restaurant_uses)
+                    if restaurant:
+                        restaurant_uses[restaurant.id] = restaurant_uses.get(restaurant.id, 0) + 1
+                        aligned_items.append(item.model_copy(update={"title": restaurant.name, "neighborhood": restaurant.neighborhood}))
+                        continue
+
+                if item.kind == "experience":
+                    experience = self._choose_balanced_candidate(item.title, ranked_experiences, experience_uses)
+                    if experience:
+                        experience_uses[experience.id] = experience_uses.get(experience.id, 0) + 1
+                        aligned_items.append(item.model_copy(update={"title": experience.name, "neighborhood": experience.neighborhood}))
+                        continue
+
+                aligned_items.append(item)
+
+            aligned_days.append(day.model_copy(update={"items": aligned_items}))
+
+        return aligned_days
+
+    def _choose_balanced_candidate(self, title: str, candidates: list[Any], usage: dict[str, int]) -> Any | None:
+        if not candidates:
+            return None
+
+        matched = self._find_option_by_title(title, candidates)
+        minimum_use = min((usage.get(candidate.id, 0) for candidate in candidates), default=0)
+
+        if matched and usage.get(matched.id, 0) <= minimum_use:
+            return matched
+
+        ranked = sorted(candidates, key=lambda candidate: (usage.get(candidate.id, 0), candidates.index(candidate)))
+        return ranked[0] if ranked else matched
+
+    def _find_option_by_title(self, title: str, options: list[Any]) -> Any | None:
+        normalized_title = self._normalize_text(title)
+        for option in options:
+            candidate_title = self._normalize_text(option.name)
+            if candidate_title == normalized_title or candidate_title in normalized_title or normalized_title in candidate_title:
+                return option
+        return None
+
+    def _matches_restaurant_candidate(self, title: str, restaurants: list[RestaurantOption]) -> bool:
+        return self._find_option_by_title(title, restaurants) is not None
+
+    def _matches_experience_candidate(self, title: str, experiences: list[ExperienceOption]) -> bool:
+        return self._find_option_by_title(title, experiences) is not None
 
     def _apply_day_swap_request(self, itinerary: ItineraryDraft, request: str) -> ItineraryDraft:
         numbers = [int(value) for value in re.findall(r"\d+", request)]
@@ -1327,3 +1621,101 @@ class AgentOrchestrator:
         if amount > 2500:
             return "luxury"
         return "mid"
+
+    def _extract_pace_from_text(self, lower_text: str) -> str | None:
+        slow_tokens = (
+            "not too packed",
+            "not too busy",
+            "don't want it too packed",
+            "do not want it too packed",
+            "slower pace",
+            "slow pace",
+            "take it easy",
+            "relaxed",
+            "轻松一点",
+            "轻松些",
+            "不要太满",
+            "别太满",
+            "不想太赶",
+            "不要太赶",
+            "慢一点",
+            "悠闲",
+        )
+        packed_tokens = (
+            "packed",
+            "see as much as possible",
+            "fit in a lot",
+            "high density",
+            "尽量多去",
+            "多安排一点",
+            "行程紧一点",
+            "高密度",
+        )
+
+        if any(token in lower_text for token in slow_tokens):
+            return "slow"
+        if any(token in lower_text for token in packed_tokens):
+            return "packed"
+        return None
+
+    def _extract_constraints_from_text(self, normalized_text: str, lower_text: str) -> list[str]:
+        constraints: list[str] = []
+
+        if any(
+            token in lower_text
+            for token in (
+                "not too packed",
+                "not too busy",
+                "don't want it too packed",
+                "do not want it too packed",
+                "slower pace",
+                "slow pace",
+                "take it easy",
+                "relaxed",
+                "轻松一点",
+                "轻松些",
+                "不要太满",
+                "别太满",
+                "不想太赶",
+                "不要太赶",
+                "慢一点",
+                "悠闲",
+            )
+        ):
+            constraints.append("avoid overly packed days")
+
+        if any(
+            token in lower_text
+            for token in (
+                "avoid long queues",
+                "long queues",
+                "skip long queues",
+                "don't want long queues",
+                "do not want long queues",
+                "不想排队",
+                "不要排队",
+                "少排队",
+                "避免排队",
+                "很多排队",
+            )
+        ):
+            constraints.append("avoid long queues")
+
+        if any(
+            token in lower_text
+            for token in (
+                "safety",
+                "safe",
+                "security",
+                "治安",
+                "安全",
+                "注意安全",
+            )
+        ):
+            constraints.append("safety-conscious planning")
+
+        dietary_match = re.findall(r"(vegetarian|vegan|halal|kosher|gluten[- ]free|素食|清真|过敏)", normalized_text, re.IGNORECASE)
+        if dietary_match:
+            constraints.append("dietary restrictions noted")
+
+        return constraints

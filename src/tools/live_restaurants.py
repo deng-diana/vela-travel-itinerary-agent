@@ -22,8 +22,8 @@ def get_restaurants(input_data: RestaurantSearchInput) -> list[RestaurantOption]
         return get_mock_restaurants(input_data)
 
     try:
-        query = build_text_query(input_data)
-        places = search_places(query=query, api_key=api_key)
+        queries = build_text_queries(input_data)
+        places = search_places(queries=queries, api_key=api_key)
         restaurants = [map_place_to_restaurant(place, input_data) for place in places]
         restaurants = [restaurant for restaurant in restaurants if restaurant is not None]
         return restaurants or get_mock_restaurants(input_data)
@@ -31,7 +31,7 @@ def get_restaurants(input_data: RestaurantSearchInput) -> list[RestaurantOption]
         return get_mock_restaurants(input_data)
 
 
-def build_text_query(input_data: RestaurantSearchInput) -> str:
+def build_text_queries(input_data: RestaurantSearchInput) -> list[str]:
     parts: list[str] = []
 
     if input_data.interests:
@@ -46,38 +46,59 @@ def build_text_query(input_data: RestaurantSearchInput) -> str:
 
     parts.append(f"in {input_data.destination}")
 
-    return " ".join(parts)
+    queries = [" ".join(parts)]
+
+    joined_interest_text = " ".join(input_data.interests).lower()
+    if any(token in joined_interest_text for token in ("hidden", "local", "gem", "independent", "neighborhood")):
+        neighborhood = f" near {', '.join(input_data.neighborhoods)}" if input_data.neighborhoods else ""
+        queries.append(f"hidden gem restaurants{neighborhood} in {input_data.destination}")
+        queries.append(f"local restaurants{neighborhood} in {input_data.destination}")
+
+    return list(dict.fromkeys(query for query in queries if query.strip()))
 
 
-def search_places(query: str, api_key: str) -> list[dict]:
-    response = httpx.post(
-        TEXT_SEARCH_URL,
-        headers={
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": ",".join(
-                [
-                    "places.id",
-                    "places.displayName",
-                    "places.formattedAddress",
-                    "places.shortFormattedAddress",
-                    "places.priceLevel",
-                    "places.googleMapsUri",
-                    "places.primaryTypeDisplayName",
-                    "places.photos",
-                ]
-            ),
-        },
-        json={
-            "textQuery": query,
-            "languageCode": "en",
-            "maxResultCount": 8,
-        },
-        timeout=20.0,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    return payload.get("places", [])
+def search_places(queries: list[str], api_key: str) -> list[dict]:
+    all_places: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for query in queries:
+        response = httpx.post(
+            TEXT_SEARCH_URL,
+            headers={
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": api_key,
+                "X-Goog-FieldMask": ",".join(
+                    [
+                        "places.id",
+                        "places.displayName",
+                        "places.formattedAddress",
+                        "places.shortFormattedAddress",
+                        "places.priceLevel",
+                        "places.googleMapsUri",
+                        "places.primaryTypeDisplayName",
+                        "places.rating",
+                        "places.userRatingCount",
+                        "places.photos",
+                    ]
+                ),
+            },
+            json={
+                "textQuery": query,
+                "languageCode": "en",
+                "maxResultCount": 8,
+            },
+            timeout=20.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        for place in payload.get("places", []):
+            place_id = place.get("id")
+            if not place_id or place_id in seen_ids:
+                continue
+            seen_ids.add(place_id)
+            all_places.append(place)
+
+    return all_places
 
 
 def map_place_to_restaurant(place: dict, input_data: RestaurantSearchInput) -> RestaurantOption | None:
@@ -117,6 +138,8 @@ def map_place_to_restaurant(place: dict, input_data: RestaurantSearchInput) -> R
         must_order_dish=None,
         reservation_link=maps_url,
         why_it_fits=build_why_it_fits(input_data, neighborhood, cuisine),
+        rating=place.get("rating"),
+        user_rating_count=place.get("userRatingCount"),
         maps_url=maps_url,
         photo_name=photo_name,
         photo_attribution=photo_attribution,
