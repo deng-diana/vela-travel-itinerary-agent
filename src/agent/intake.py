@@ -21,13 +21,13 @@ from src.tools.schemas import ItineraryDraft, PlanningBrief, PlanningBriefPatch
 # Fields we truly need before planning can start (bare minimum).
 ESSENTIAL_FIELDS = ("destination", "trip_length_days")
 
-# Nice-to-have fields: we ask once, but proceed with smart defaults if missing.
+# These are filled via smart defaults if the user doesn't mention them.
+# We do NOT ask about them upfront — the user can refine after seeing the first draft.
 NICE_TO_HAVE_FIELDS = (
     "dates_or_month",
     "travel_party",
     "budget",
-    "priorities",
-    "constraints_confirmed",
+    "pace",
 )
 
 # Smart defaults applied when user doesn't provide nice-to-have info
@@ -52,7 +52,9 @@ def extract_brief_patch(
         "constraints, constraints_confirmed, style_notes, pace, hotel_preference, neighborhood_preference, "
         "dietary_preferences, must_do, must_avoid, day_swap_request, notes.\n"
         "Rules:\n"
-        "- Map budget to one of: budget, mid, luxury.\n"
+        "- destination: the TARGET city/country of the trip. If the user says 'from London to Paris', "
+        "destination is Paris (not London, not 'London to Paris'). Extract only the destination city/country.\n"
+        "- Map budget to one of: budget, mid, luxury. '£1000' or '$1500' for a few days → mid.\n"
         "- Map pace to one of: slow, balanced, packed.\n"
         "- priorities/style_notes/must_do/must_avoid/dietary_preferences/constraints are arrays when present.\n"
         "- Set constraints_confirmed=true if the user explicitly says there are no special restrictions.\n"
@@ -159,7 +161,7 @@ def missing_essential_fields(brief: PlanningBrief) -> list[str]:
 
 
 def missing_nice_to_have_fields(brief: PlanningBrief) -> list[str]:
-    """Check which nice-to-have fields are still missing (non-blocking)."""
+    """Nice-to-have fields we ask about in the first follow-up (non-blocking)."""
     missing: list[str] = []
     if not brief.dates_or_month:
         missing.append("dates_or_month")
@@ -169,17 +171,17 @@ def missing_nice_to_have_fields(brief: PlanningBrief) -> list[str]:
         missing.append("budget")
     if not brief.priorities:
         missing.append("priorities")
-    if not brief.constraints and not brief.constraints_confirmed:
-        missing.append("constraints")
+    # constraints/must-avoid intentionally excluded — user raises these during planning
     return missing
 
 
 def missing_landing_followup_fields(brief: PlanningBrief) -> list[str]:
-    """Collect the fields we want to cover in the single landing follow-up."""
-    return missing_essential_fields(brief) + [
-        field for field in missing_nice_to_have_fields(brief)
-        if field not in {"constraints_confirmed"}
-    ]
+    """Fields to ask about in the single landing follow-up.
+
+    Includes essential + nice-to-have (dates, party, budget, priorities).
+    constraints/must-avoid are excluded — user can mention them any time during planning.
+    """
+    return missing_essential_fields(brief) + missing_nice_to_have_fields(brief)
 
 
 def apply_smart_defaults(brief: PlanningBrief) -> PlanningBrief:
@@ -211,17 +213,11 @@ def build_clarifying_reply(
 
 
 def build_landing_followup_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
-    """Ask for all missing high-value trip details in one compact follow-up."""
+    """Ask for the bare minimum needed to start — destination and/or trip length only."""
     joined = _join_field_labels(missing, user_message)
     if _looks_like_chinese(user_message):
-        return (
-            f"我先把第一版行程搭起来前，再帮我补一下：{joined}。"
-            "你按现在知道的回复就行，我收到下一条就先开始规划。"
-        )
-    return (
-        f"Before I build the first draft, could you fill in {joined}? "
-        "Reply with whatever you know, and after your next message I'll start planning with what I have."
-    )
+        return f"告诉我{joined}，我马上开始规划！"
+    return f"Just tell me {joined} and I'll start building your itinerary right away!"
 
 
 def build_workspace_handoff_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
@@ -335,7 +331,6 @@ def _field_label(field: str, user_message: str) -> str:
         "travel_party": ("几个人一起去", "who's traveling"),
         "budget": ("预算大概什么范围", "your budget range"),
         "priorities": ("这趟最看重什么", "what matters most on this trip"),
-        "constraints": ("有没有要避开的限制或特殊需求", "any must-avoid constraints or special needs"),
     }
     zh_label, en_label = labels.get(field, ("补充偏好", "a missing trip detail"))
     return zh_label if chinese else en_label
@@ -375,16 +370,35 @@ def _extract_travel_party(lower_text: str) -> str | None:
 
 
 def _extract_destination(user_text: str) -> str | None:
-    patterns = [
-        r"(?:go(?:ing)? to|trip to|visit(?:ing)?|travel(?:l?ing)? to)\s+([a-zA-Z][a-zA-Z\s'&.-]{1,40}?)(?:\s+(?:for|next|this|in|on|with|alone|as|,|$))",
+    stop_words = {"the", "a", "an", "my", "me", "i", "you", "we", "us", "it", "is", "am",
+                  "go", "make", "plan", "create", "build", "see", "do", "get", "have"}
+
+    # Patterns that rely on city being capitalised — run WITHOUT re.IGNORECASE
+    capital_patterns = [
+        # "from London to Paris for ..."
+        r"(?:from\s+[A-Z]\w[\w\s]{0,20}\s+to)\s+([A-Z][a-zA-Z\s'&.-]{1,30}?)(?:\s+(?:for|in|next|this|,|on)|[,.]|$)",
+        # "to Paris for/next/this ..."  (only when followed immediately by a keyword)
+        r"\bto\s+([A-Z][a-zA-Z]{2,30}(?:\s[A-Z][a-zA-Z]{2,20})?)\s+(?:for|in|next|this)\b",
+    ]
+    for pattern in capital_patterns:
+        match = re.search(pattern, user_text)  # case-sensitive → city must be capitalised
+        if match:
+            destination = match.group(1).strip(" ,.")
+            if destination and destination.lower() not in stop_words:
+                return destination.title()
+
+    # Patterns that use keyword anchors — safe with re.IGNORECASE
+    keyword_patterns = [
+        r"(?:go(?:ing)? to|trip to|visit(?:ing)?|travel(?:l?ing)? to)\s+([a-zA-Z][a-zA-Z\s'&.-]{1,40}?)(?:\s+(?:for|next|this|in|on|with|alone|as)|[,.]|$)",
         r"(?:in)\s+([A-Z][a-zA-Z\s'&.-]{1,40}?)(?:\s+(?:for|next|this|on|with|alone|,|$))",
     ]
-    for pattern in patterns:
+    for pattern in keyword_patterns:
         match = re.search(pattern, user_text, re.IGNORECASE)
         if match:
             destination = match.group(1).strip(" ,.")
-            if destination:
+            if destination and destination.lower() not in stop_words:
                 return destination.title()
+
     return None
 
 

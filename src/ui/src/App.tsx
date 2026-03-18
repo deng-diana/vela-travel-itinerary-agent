@@ -1,11 +1,40 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import type { AgentStep, ChatMessage, ItineraryDraft, StreamEvent, WeatherSummary, HotelOption, RestaurantOption, ExperienceOption, DayPlan } from './types'
-import { API_BASE_URL } from './types'
+import type {
+  AgentStep,
+  ChatMessage,
+  ItineraryDraft,
+  StreamEvent,
+  WeatherSummary,
+  HotelOption,
+  RestaurantOption,
+  ExperienceOption,
+  DayPlan,
+  BudgetEstimate,
+  VisaRequirements,
+  PackingSuggestions,
+} from './types'
+import { API_BASE_URL, buildPhotoUrl } from './types'
 import { Landing } from './components/Landing'
 import { ChatPanel } from './components/ChatPanel'
 import { ItineraryPanel } from './components/ItineraryPanel'
+import { StoryPlayer } from './components/StoryPlayer'
+import { buildStory } from './lib/story'
+
+type ViewMode = 'canvas' | 'story'
+
+const BLANK_ITINERARY: ItineraryDraft = {
+  destination: '',
+  month: '',
+  trip_length_days: 0,
+  interests: [],
+  hotels: [],
+  restaurants: [],
+  experiences: [],
+  days: [],
+  summary: '',
+}
 
 function App() {
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -17,6 +46,62 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [workspaceMode, setWorkspaceMode] = useState(false)
+  const [viewMode, setViewMode] = useState<ViewMode>('canvas')
+  const [userLockedMode, setUserLockedMode] = useState(false)
+  const hasAutoSwitchedRef = useRef(false)
+
+  // Public story page: ?trip=<slug>
+  const [publicSlug] = useState<string | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('trip')
+  })
+  const [publicItinerary, setPublicItinerary] = useState<ItineraryDraft | null>(null)
+  const [publicLoading, setPublicLoading] = useState(false)
+  const [publicError, setPublicError] = useState<string | null>(null)
+
+  // Load public itinerary if ?trip= param is present
+  useEffect(() => {
+    if (!publicSlug) return
+    setPublicLoading(true)
+    fetch(`${API_BASE_URL}/plans/${publicSlug}`)
+      .then((r) => {
+        if (!r.ok) throw new Error(`Plan not found (${r.status})`)
+        return r.json()
+      })
+      .then((data) => {
+        setPublicItinerary(data.itinerary as ItineraryDraft)
+        setPublicLoading(false)
+      })
+      .catch((err) => {
+        setPublicError(err instanceof Error ? err.message : 'Failed to load plan')
+        setPublicLoading(false)
+      })
+  }, [publicSlug])
+
+  // Auto-switch to Story Mode after itinerary is complete
+  useEffect(() => {
+    if (
+      itinerary?.days && itinerary.days.length > 0 &&
+      !isStreaming &&
+      !hasAutoSwitchedRef.current &&
+      !userLockedMode
+    ) {
+      setViewMode('story')
+      hasAutoSwitchedRef.current = true
+    }
+  }, [itinerary?.days?.length, isStreaming, userLockedMode])
+
+  // Reset auto-switch flag when user starts a new trip conversation
+  function resetTrip() {
+    hasAutoSwitchedRef.current = false
+    setUserLockedMode(false)
+    setViewMode('canvas')
+  }
+
+  function handleToggleView(mode: ViewMode) {
+    setViewMode(mode)
+    setUserLockedMode(true)
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -29,6 +114,9 @@ function App() {
     setMessages((current) => [...current, { role: 'user', text: trimmed }])
     setSteps([])
     setLiveNarration('')
+
+    // Reset auto-switch on new conversation turn
+    if (!itinerary) resetTrip()
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -97,17 +185,7 @@ function App() {
       setLiveNarration(completedStep.detail)
 
       setItinerary((current) => {
-        const next: ItineraryDraft = current ?? {
-          destination: '',
-          month: '',
-          trip_length_days: 0,
-          interests: [],
-          hotels: [],
-          restaurants: [],
-          experiences: [],
-          days: [],
-          summary: '',
-        }
+        const next: ItineraryDraft = current ?? { ...BLANK_ITINERARY }
 
         switch (streamEvent.tool_name) {
           case 'get_weather':
@@ -127,6 +205,15 @@ function App() {
             break
           case 'get_daily_structure':
             next.days = streamEvent.payload as DayPlan[]
+            break
+          case 'estimate_budget':
+            next.budget_estimate = streamEvent.payload as BudgetEstimate
+            break
+          case 'get_visa_requirements':
+            next.visa_requirements = streamEvent.payload as VisaRequirements
+            break
+          case 'get_packing_suggestions':
+            next.packing_suggestions = streamEvent.payload as PackingSuggestions
             break
           default:
             break
@@ -152,6 +239,32 @@ function App() {
     }
   }
 
+  // Public story page
+  if (publicSlug) {
+    if (publicLoading) {
+      return (
+        <div
+          className="min-h-screen flex items-center justify-center"
+          style={{ background: 'var(--story-bg)', color: 'var(--story-text-muted)', fontFamily: 'var(--font-data)' }}
+        >
+          Loading trip…
+        </div>
+      )
+    }
+    if (publicError || !publicItinerary) {
+      return (
+        <div
+          className="min-h-screen flex items-center justify-center"
+          style={{ background: 'var(--story-bg)', color: 'var(--story-text-muted)', fontFamily: 'var(--font-data)' }}
+        >
+          {publicError ?? 'Trip not found.'}
+        </div>
+      )
+    }
+    const publicSlides = buildStory(publicItinerary, buildPhotoUrl)
+    return <StoryPlayer slides={publicSlides} />
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <AnimatePresence mode="wait">
@@ -165,6 +278,32 @@ function App() {
             onInputChange={setInput}
             onSubmit={handleSubmit}
           />
+        ) : viewMode === 'story' && itinerary?.days && itinerary.days.length > 0 ? (
+          <motion.div
+            key="story"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4 }}
+            className="fixed inset-0 z-40"
+          >
+            {/* Back to workspace button */}
+            <button
+              onClick={() => handleToggleView('canvas')}
+              className="fixed top-4 left-4 z-50 flex items-center gap-2 rounded-full px-4 py-2 text-xs transition-opacity hover:opacity-80"
+              style={{
+                background: 'rgba(10,10,10,0.8)',
+                border: '1px solid var(--story-border)',
+                color: 'var(--story-text-muted)',
+                fontFamily: 'var(--font-data)',
+                letterSpacing: '0.05em',
+                backdropFilter: 'blur(8px)',
+              }}
+            >
+              ← Canvas
+            </button>
+            <StoryPlayer slides={buildStory(itinerary, buildPhotoUrl)} />
+          </motion.div>
         ) : (
           <motion.section
             key="workspace"
@@ -185,7 +324,15 @@ function App() {
               onInputChange={setInput}
               onSubmit={handleSubmit}
             />
-            <ItineraryPanel itinerary={itinerary} />
+            <ItineraryPanel
+              itinerary={itinerary}
+              viewMode={viewMode}
+              onToggleView={handleToggleView}
+              canSwitchToStory={!!(itinerary?.days && itinerary.days.length > 0 && !isStreaming)}
+              isStreaming={isStreaming}
+              liveNarration={liveNarration}
+              steps={steps}
+            />
           </motion.section>
         )}
       </AnimatePresence>
@@ -204,6 +351,9 @@ function makeActiveStep(toolName: string): AgentStep {
     get_restaurants: 'Curating dining options that match the traveler profile and local rhythm.',
     get_experiences: 'Collecting experiences that add texture without breaking the pace.',
     get_daily_structure: 'Organizing everything into a coherent day-by-day route.',
+    estimate_budget: 'Calculating a realistic budget breakdown for the trip.',
+    get_visa_requirements: 'Looking up entry requirements and visa details.',
+    get_packing_suggestions: 'Building a smart packing list based on weather and activities.',
   }
 
   return {
@@ -221,6 +371,9 @@ function makeCompletedStep(toolName: string): AgentStep {
     get_restaurants: 'Dining options are now part of the plan.',
     get_experiences: 'Experience options are ready and mapped into the trip.',
     get_daily_structure: 'The itinerary has been organized into labeled days.',
+    estimate_budget: 'Budget breakdown is ready.',
+    get_visa_requirements: 'Entry requirements have been looked up.',
+    get_packing_suggestions: 'Packing list is ready.',
   }
 
   return {
@@ -238,6 +391,9 @@ function prettyToolName(toolName: string): string {
     get_restaurants: 'Curating dining',
     get_experiences: 'Finding experiences',
     get_daily_structure: 'Building the itinerary',
+    estimate_budget: 'Estimating budget',
+    get_visa_requirements: 'Checking visa requirements',
+    get_packing_suggestions: 'Building packing list',
   }
   return names[toolName] ?? toolName
 }

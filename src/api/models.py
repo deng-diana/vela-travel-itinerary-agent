@@ -19,3 +19,17 @@ class ChatResponse(BaseModel):
     workspace_ready: bool = False
     missing_fields: list[str] = Field(default_factory=list)
     planning_brief: PlanningBrief | None = None
+
+
+class PublishRequest(BaseModel):
+    itinerary: dict
+
+
+class PublishResponse(BaseModel):
+    slug: str
+    share_url: str
+
+
+class PlanSnapshot(BaseModel):
+    slug: str
+    itinerary: dict

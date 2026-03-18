@@ -1,9 +1,23 @@
+import { useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type { ItineraryDraft } from '../types'
+import { API_BASE_URL } from '../types'
 import { WeatherStrip } from './WeatherStrip'
 import { HotelGallery } from './HotelGallery'
 import { VenueCard } from './VenueCard'
 import { DayCard } from './DayCard'
+
+type ViewMode = 'canvas' | 'story'
+
+interface Props {
+  itinerary: ItineraryDraft | null
+  viewMode: ViewMode
+  onToggleView: (mode: ViewMode) => void
+  canSwitchToStory: boolean
+  isStreaming: boolean
+  liveNarration: string
+  steps: Array<{ id: string; title: string; detail: string; status: 'active' | 'completed' }>
+}
 
 function compactSummary(summary: string) {
   const normalized = summary.replace(/#+\s*/g, ' ').replace(/\*\*/g, '').replace(/\s+/g, ' ').trim()
@@ -14,16 +28,48 @@ function compactSummary(summary: string) {
   return `${slice.slice(0, cutoff > 120 ? cutoff + 1 : 260).trim()}…`
 }
 
-export function ItineraryPanel({ itinerary }: { itinerary: ItineraryDraft | null }) {
+export function ItineraryPanel({ itinerary, viewMode, onToggleView, canSwitchToStory, isStreaming, liveNarration, steps }: Props) {
   const hasDays = itinerary && itinerary.days.length > 0
   const hasVenues = itinerary && (itinerary.restaurants.length > 0 || itinerary.experiences.length > 0)
+  const activeStep = [...steps].reverse().find((s) => s.status === 'active') ?? null
+  const completedSteps = steps.filter((s) => s.status === 'completed')
+
+  const [isPublishing, setIsPublishing] = useState(false)
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  async function handlePublish() {
+    if (!itinerary || isPublishing) return
+    setIsPublishing(true)
+    try {
+      const response = await fetch(`${API_BASE_URL}/plans/publish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ itinerary }),
+      })
+      if (!response.ok) throw new Error('Publish failed')
+      const data = await response.json() as { share_url: string }
+      setPublishedUrl(data.share_url)
+    } catch {
+      // Silently fail — publish is non-critical
+    } finally {
+      setIsPublishing(false)
+    }
+  }
+
+  async function handleCopyLink() {
+    if (!publishedUrl) return
+    await navigator.clipboard.writeText(publishedUrl)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   return (
     <section className="rounded-[32px] border border-slate-800 bg-slate-900/85 p-6">
       <div className="rounded-[28px] border border-slate-800 bg-slate-950/90 p-6">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-4">
-          <div>
+        {/* Header row */}
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
             <p className="text-xs uppercase tracking-[0.28em] text-slate-400">Live Itinerary</p>
             <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-white">
               {itinerary?.destination
@@ -36,10 +82,107 @@ export function ItineraryPanel({ itinerary }: { itinerary: ItineraryDraft | null
                 : 'The plan will open here as Vela gathers weather, stays, food, and route logic.'}
             </p>
           </div>
-          <div className="rounded-[22px] border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
-            {itinerary?.month || 'Awaiting dates'}
+
+          <div className="flex flex-col items-end gap-2 flex-shrink-0">
+            <div className="rounded-[22px] border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-slate-300">
+              {itinerary?.month || 'Awaiting dates'}
+            </div>
+
+            {/* Canvas / Story toggle */}
+            {itinerary && (
+              <div className="flex rounded-full border border-slate-800 bg-slate-900 overflow-hidden text-xs">
+                <button
+                  onClick={() => onToggleView('canvas')}
+                  className="px-3 py-1.5 transition-colors"
+                  style={{
+                    background: viewMode === 'canvas' ? 'rgba(255,255,255,0.08)' : 'transparent',
+                    color: viewMode === 'canvas' ? '#fff' : '#94a3b8',
+                  }}
+                >
+                  Canvas
+                </button>
+                <button
+                  onClick={() => onToggleView('story')}
+                  disabled={!canSwitchToStory}
+                  className="px-3 py-1.5 transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+                  style={{
+                    background: viewMode === 'story' ? 'rgba(196,113,92,0.2)' : 'transparent',
+                    color: viewMode === 'story' ? '#C4715C' : '#94a3b8',
+                  }}
+                >
+                  Story
+                </button>
+              </div>
+            )}
+
+            {/* Publish */}
+            {canSwitchToStory && (
+              <div className="flex items-center gap-2">
+                {!publishedUrl ? (
+                  <button
+                    onClick={handlePublish}
+                    disabled={isPublishing}
+                    className="rounded-full px-3 py-1.5 text-xs transition-opacity hover:opacity-80 disabled:opacity-40"
+                    style={{
+                      border: '1px solid #C4715C',
+                      color: '#C4715C',
+                      background: 'transparent',
+                    }}
+                  >
+                    {isPublishing ? 'Publishing…' : 'Publish →'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleCopyLink}
+                    className="rounded-full px-3 py-1.5 text-xs transition-opacity hover:opacity-80"
+                    style={{
+                      border: '1px solid #2A7F6F',
+                      color: '#2A7F6F',
+                      background: 'transparent',
+                    }}
+                  >
+                    {copied ? 'Copied!' : 'Copy link'}
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
+
+        {/* Streaming progress — shown during planning, right side */}
+        <AnimatePresence>
+          {isStreaming && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.3 }}
+              className="mt-5 rounded-[20px] border border-slate-800 bg-slate-900/60 px-5 py-4"
+            >
+              {/* Completed steps as a compact trail */}
+              {completedSteps.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {completedSteps.map((step) => (
+                    <span
+                      key={step.id}
+                      className="flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-950 px-3 py-1 text-[11px] text-slate-400"
+                    >
+                      <span className="text-emerald-400">✓</span>
+                      {step.title}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {/* Active step + narration */}
+              <div className="flex items-start gap-3">
+                <span className="mt-1 h-2 w-2 flex-shrink-0 rounded-full bg-emerald-400 animate-pulse" />
+                <p className="text-sm text-slate-300 leading-6">
+                  {liveNarration || activeStep?.detail || 'Thinking…'}
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {!itinerary ? (
           <div className="mt-6 rounded-[24px] border border-dashed border-slate-800 px-6 py-16 text-center text-sm text-slate-500">
@@ -55,7 +198,7 @@ export function ItineraryPanel({ itinerary }: { itinerary: ItineraryDraft | null
               </div>
             </div>
 
-            {/* Hotel Gallery - progressive rendering: appears as soon as hotels arrive */}
+            {/* Hotel Gallery */}
             <AnimatePresence>
               {itinerary.hotels.length > 0 && (
                 <motion.div
@@ -68,7 +211,7 @@ export function ItineraryPanel({ itinerary }: { itinerary: ItineraryDraft | null
               )}
             </AnimatePresence>
 
-            {/* Venue staging area - appears before daily structure organizes them */}
+            {/* Venue staging area */}
             <AnimatePresence>
               {hasVenues && !hasDays && (
                 <motion.div
@@ -120,7 +263,7 @@ export function ItineraryPanel({ itinerary }: { itinerary: ItineraryDraft | null
               )}
             </AnimatePresence>
 
-            {/* Day-by-day itinerary - replaces venue staging once daily structure arrives */}
+            {/* Day-by-day itinerary */}
             <AnimatePresence>
               {hasDays && (
                 <motion.div

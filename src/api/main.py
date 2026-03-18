@@ -8,7 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 from src.api.dependencies import get_orchestrator, get_session_store, get_settings
-from src.api.models import ChatRequest, ChatResponse
+from src.api.models import ChatRequest, ChatResponse, PublishRequest, PublishResponse, PlanSnapshot
+from src.api.publish_store import get_plan, publish_plan
 
 
 app = FastAPI(
@@ -96,6 +97,21 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/plans/publish", response_model=PublishResponse)
+def plans_publish(request: PublishRequest) -> PublishResponse:
+    slug = publish_plan(request.itinerary)
+    share_url = f"http://localhost:5173/?trip={slug}"
+    return PublishResponse(slug=slug, share_url=share_url)
+
+
+@app.get("/plans/{slug}", response_model=PlanSnapshot)
+def plans_get(slug: str) -> PlanSnapshot:
+    itinerary = get_plan(slug)
+    if itinerary is None:
+        raise HTTPException(status_code=404, detail="Plan not found.")
+    return PlanSnapshot(slug=slug, itinerary=itinerary)
 
 
 def _format_sse(event_name: str, payload: dict) -> str:
