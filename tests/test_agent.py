@@ -1,8 +1,6 @@
-from datetime import datetime
-
 import src.agent.orchestrator as orchestrator_module
 from src.agent.orchestrator import AgentOrchestrator
-from src.agent.intake import apply_smart_defaults
+from src.agent.intake import apply_pace_default
 from src.agent.research import build_tool_plan, payloads_from_previous
 from src.agent.state import ConversationState
 from src.tools.schemas import (
@@ -100,7 +98,7 @@ def _sample_itinerary() -> ItineraryDraft:
     )
 
 
-def test_orchestrator_asks_one_landing_followup_before_planning(monkeypatch):
+def test_orchestrator_asks_clarifying_questions_when_fields_missing(monkeypatch):
     orchestrator = AgentOrchestrator(client=_SilentClient(), model="fake-model")
     state = ConversationState(session_id="session-1")
 
@@ -113,16 +111,17 @@ def test_orchestrator_asks_one_landing_followup_before_planning(monkeypatch):
     result = orchestrator.run(state=state, user_message="3 days in Tokyo")
 
     assert result.workspace_ready is False
-    assert state.intake_followup_asked is True
-    assert "budget" in result.missing_fields
-    assert "after your next message" in result.reply.lower()
     assert state.last_itinerary is None
+    # Should be missing several fields (budget, travel_party, etc.)
+    assert len(result.missing_fields) > 0
+    assert any(f in result.missing_fields for f in ["budget", "travel_party", "hotel_preference"])
 
 
-def test_orchestrator_moves_to_workspace_after_followup_instead_of_third_landing_round(monkeypatch):
+def test_orchestrator_keeps_asking_until_all_8_fields_filled(monkeypatch):
     orchestrator = AgentOrchestrator(client=_SilentClient(), model="fake-model")
-    state = ConversationState(session_id="session-2", intake_followup_asked=True)
+    state = ConversationState(session_id="session-2")
 
+    # Even with destination and trip_length, still missing other required fields
     monkeypatch.setattr(
         orchestrator_module,
         "extract_brief_patch",
@@ -131,24 +130,31 @@ def test_orchestrator_moves_to_workspace_after_followup_instead_of_third_landing
 
     result = orchestrator.run(state=state, user_message="Still deciding")
 
-    assert result.workspace_ready is True
-    assert state.workspace_ready is True
+    assert result.workspace_ready is False
     assert result.itinerary is None
-    assert result.missing_fields == ["destination", "trip_length_days"]
-    assert "opened the workspace" in result.reply.lower()
+    assert "destination" in result.missing_fields
+    assert "trip_length_days" in result.missing_fields
 
 
 def test_build_tool_plan_selectively_skips_weather_for_budget_change():
     plan = build_tool_plan({"budget"}, has_existing_plan=True)
 
-    assert plan["gather_tools"] == ["get_hotels", "get_restaurants"]
+    # Budget change triggers hotels, restaurants, and estimate_budget (downstream)
+    assert "get_hotels" in plan["gather_tools"]
+    assert "get_restaurants" in plan["gather_tools"]
+    assert "estimate_budget" in plan["gather_tools"]
     assert "get_weather" not in plan["gather_tools"]
+    assert "get_experiences" not in plan["gather_tools"]
 
 
 def test_build_tool_plan_only_reruns_weather_for_date_change():
     plan = build_tool_plan({"dates_or_month"}, has_existing_plan=True)
 
-    assert plan["gather_tools"] == ["get_weather"]
+    # Date change triggers weather and packing (downstream dependency)
+    assert "get_weather" in plan["gather_tools"]
+    assert "get_packing_suggestions" in plan["gather_tools"]
+    assert "get_hotels" not in plan["gather_tools"]
+    assert "get_restaurants" not in plan["gather_tools"]
 
 
 def test_build_tool_plan_reruns_hotels_and_restaurants_for_neighborhood_change():
@@ -163,10 +169,10 @@ def test_trip_length_change_can_reuse_existing_gather_payloads():
     assert plan["gather_tools"] == []
 
 
-def test_apply_smart_defaults_fills_current_month_when_dates_are_missing():
-    brief = apply_smart_defaults(PlanningBrief(destination="Tokyo", trip_length_days=3))
+def test_apply_pace_default_fills_balanced_when_pace_is_missing():
+    brief = apply_pace_default(PlanningBrief(destination="Tokyo", trip_length_days=3))
 
-    assert brief.dates_or_month == datetime.now().strftime("%B")
+    assert brief.pace == "balanced"
 
 
 def test_payloads_from_previous_preserves_unaffected_tool_results():

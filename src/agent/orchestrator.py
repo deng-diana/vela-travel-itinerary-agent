@@ -30,22 +30,22 @@ from src.agent.composer import (
     verify_itinerary_quality,
 )
 from src.agent.intake import (
-    apply_smart_defaults,
-    build_landing_followup_reply,
+    apply_pace_default,
     build_clarifying_reply,
-    build_workspace_handoff_reply,
     extract_brief_patch,
     merge_brief,
-    missing_landing_followup_fields,
     missing_essential_fields,
+    validate_brief_ready,
 )
 from src.agent.llm_helpers import normalize_blocks
 from src.agent.preference_update import build_planning_preface, detect_changed_fields
 from src.agent.prompts import SYSTEM_PROMPT, TOOL_PLANNING_PROMPT
 from src.agent.research import (
+    FIELD_TOOL_DEPENDENCIES,
     build_tool_input,
     build_tool_plan,
     execute_tools_parallel,
+    execute_tools_streaming,
     payloads_from_previous,
     prepare_candidate_context,
 )
@@ -98,26 +98,21 @@ class AgentOrchestrator:
 
         yield AgentEvent(type="session", payload={"session_id": state.session_id})
 
-        # ── Phase 1: Intake (lean — only block on essentials) ────────
+        # ── Phase 1: Intake — collect all 8 required fields ────────
         previous_brief = state.planning_brief.model_copy(deep=True)
         patch = extract_brief_patch(
             self.client, self.model, previous_brief, user_text, state.last_itinerary
         )
         brief = merge_brief(previous_brief, patch)
+        state.planning_brief = brief
 
-        should_hold_landing = (
-            state.last_itinerary is None
-            and not state.workspace_ready
-            and not state.intake_followup_asked
-        )
-        landing_missing = missing_landing_followup_fields(brief)
-        if should_hold_landing and landing_missing:
-            reply = build_landing_followup_reply(brief, landing_missing, user_text)
+        # Gate: all 8 essential fields must be present before proceeding
+        ready, essential_missing = validate_brief_ready(brief)
+        if not ready:
+            reply = build_clarifying_reply(self.client, self.model, brief, essential_missing)
             messages.append({"role": "assistant", "content": reply})
-            state.planning_brief = brief
             state.messages = messages
             state.workspace_ready = False
-            state.intake_followup_asked = True
             yield AgentEvent(type="assistant_message", message=reply)
             yield AgentEvent(
                 type="final_response",
@@ -126,40 +121,15 @@ class AgentOrchestrator:
                     "reply": reply,
                     "itinerary": None,
                     "workspace_ready": False,
-                    "missing_fields": landing_missing,
-                    "planning_brief": brief.model_dump(mode="json"),
-                },
-            )
-            return
-
-        brief = apply_smart_defaults(brief)
-        state.planning_brief = brief
-
-        essential_missing = missing_essential_fields(brief)
-        if essential_missing:
-            if state.intake_followup_asked and state.last_itinerary is None:
-                reply = build_workspace_handoff_reply(brief, essential_missing, user_text)
-                workspace_ready = True
-            else:
-                reply = build_clarifying_reply(self.client, self.model, brief, essential_missing)
-                workspace_ready = False
-            messages.append({"role": "assistant", "content": reply})
-            state.planning_brief = brief
-            state.messages = messages
-            state.workspace_ready = workspace_ready
-            yield AgentEvent(type="assistant_message", message=reply)
-            yield AgentEvent(
-                type="final_response",
-                message=reply,
-                payload={
-                    "reply": reply,
-                    "itinerary": state.last_itinerary.model_dump(mode="json") if state.last_itinerary else None,
-                    "workspace_ready": workspace_ready,
                     "missing_fields": essential_missing,
                     "planning_brief": brief.model_dump(mode="json"),
                 },
             )
             return
+
+        # All 8 fields present — apply pace default (only non-required field with a default)
+        brief = apply_pace_default(brief)
+        state.planning_brief = brief
 
         # ── Phase 2: Detect changes & plan ───────────────────────────
         changed_fields = detect_changed_fields(previous_brief, brief, patch)
@@ -285,6 +255,25 @@ class AgentOrchestrator:
         """
         tool_payloads.update(dict(payloads_from_previous(previous)))
 
+        # ── Code-level gate: compute which tools are ALLOWED ──────────
+        # This enforces selective rerun at the code level, not just via prompt.
+        if has_existing_plan and changed_fields:
+            allowed_tools: set[str] | None = set()
+            for field in changed_fields:
+                allowed_tools.update(FIELD_TOOL_DEPENDENCIES.get(field, set()))
+            # Downstream dependencies: if weather reruns, packing should too
+            if allowed_tools & {"get_weather"}:
+                allowed_tools.add("get_packing_suggestions")
+            # If hotels rerun, budget should be recalculated
+            if allowed_tools & {"get_hotels"}:
+                allowed_tools.add("estimate_budget")
+        elif has_existing_plan and not changed_fields:
+            # Nothing changed — don't allow any tools
+            allowed_tools = set()
+        else:
+            # First plan — allow everything
+            allowed_tools = None
+
         gather_tools = get_claude_tools(names=GATHER_TOOL_NAMES)
         has_existing_plan = previous is not None
 
@@ -320,28 +309,74 @@ class AgentOrchestrator:
                 blocks = normalize_blocks(response.content)
                 tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
 
+                # ── Code-level selective rerun gate ───────────────────
+                # Even if Claude proposes tools outside the allowed set,
+                # we strip them here so only affected tools actually run.
+                if allowed_tools is not None:
+                    filtered = [tu for tu in tool_uses if tu["name"] in allowed_tools]
+                    if len(filtered) < len(tool_uses):
+                        skipped = [tu["name"] for tu in tool_uses if tu["name"] not in allowed_tools]
+                        logger.info("Selective rerun: skipped tools %s (not in allowed set %s)", skipped, allowed_tools)
+                    tool_uses = filtered
+
                 if not tool_uses:
                     break  # Claude is done proposing tools
 
-                # Emit tool_started events immediately
+                # Emit tool_started for the first tool immediately, rest will be staggered
+                first_started = False
                 for tu in tool_uses:
-                    yield AgentEvent(
-                        type="tool_started",
-                        tool_name=tu["name"],
-                        message=f"Running {tu['name']}",
-                    )
+                    if not first_started:
+                        yield AgentEvent(
+                            type="tool_started",
+                            tool_name=tu["name"],
+                            message=f"Running {tu['name']}",
+                        )
+                        first_started = True
 
                 # Add Claude's full response to message history (required by API)
                 loop_messages.append({"role": "assistant", "content": response.content})
 
-                # Execute all proposed tools in parallel
+                # Execute all proposed tools in parallel, streaming results as they complete
                 gather_specs = [
                     (tu["name"], tu.get("input", {}))
                     for tu in tool_uses
                 ]
-                results = execute_tools_parallel(gather_specs)
 
-                # Build tool_result blocks and yield completed events immediately
+                # Track which tools haven't started yet (for staggered start events)
+                pending_starts = {tu["name"] for tu in tool_uses[1:]}  # first already started
+                results: dict[str, tuple[str, Any]] = {}
+
+                for name, status, result in execute_tools_streaming(gather_specs):
+                    # When a tool completes, emit its completed event
+                    results[name] = (status, result)
+                    if status == "ok":
+                        tool_payloads[name] = result
+                        yield AgentEvent(
+                            type="tool_completed", tool_name=name, payload=result
+                        )
+
+                    # Start the next pending tool (staggered effect)
+                    if pending_starts:
+                        next_name = pending_starts.pop()
+                        yield AgentEvent(
+                            type="tool_started",
+                            tool_name=next_name,
+                            message=f"Running {next_name}",
+                        )
+
+                # Emit remaining started events for any tools that haven't been signaled yet
+                for remaining in pending_starts:
+                    yield AgentEvent(
+                        type="tool_started",
+                        tool_name=remaining,
+                        message=f"Running {remaining}",
+                    )
+                    if remaining in results and results[remaining][0] == "ok":
+                        yield AgentEvent(
+                            type="tool_completed", tool_name=remaining, payload=results[remaining][1]
+                        )
+
+                # Build tool_result blocks for Claude context
                 tool_result_blocks: list[dict[str, Any]] = []
                 for tu in tool_uses:
                     name = tu.get("name", "")
@@ -349,10 +384,6 @@ class AgentOrchestrator:
                     if name in results:
                         status, result = results[name]
                         if status == "ok":
-                            tool_payloads[name] = result
-                            yield AgentEvent(
-                                type="tool_completed", tool_name=name, payload=result
-                            )
                             # Truncate to stay within token budget
                             result_str = json.dumps(result, ensure_ascii=False)
                             if len(result_str) > 4000:

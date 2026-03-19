@@ -123,6 +123,34 @@ def execute_tools_parallel(
     return results
 
 
+def execute_tools_streaming(
+    gather_specs: list[tuple[str, dict[str, Any]]],
+    timeout_seconds: float = 30.0,
+):
+    """Run gather-tools in parallel, yielding (name, status, result) as each completes.
+
+    Unlike execute_tools_parallel which blocks until all finish, this generator
+    yields individual results as they arrive, enabling real-time SSE streaming.
+    """
+    if not gather_specs:
+        return
+
+    with ThreadPoolExecutor(max_workers=min(4, len(gather_specs))) as executor:
+        future_map = {executor.submit(run_tool, name, inp): name for name, inp in gather_specs}
+        for future in as_completed(future_map, timeout=timeout_seconds):
+            name = future_map[future]
+            try:
+                result = future.result()
+                yield (name, "ok", result)
+            except Exception as exc:
+                yield (name, "error", str(exc))
+        # Mark any tools that didn't finish within the timeout
+        for future, name in future_map.items():
+            if not future.done():
+                future.cancel()
+                yield (name, "error", f"Tool {name} timed out after {timeout_seconds}s")
+
+
 # ---------------------------------------------------------------------------
 # Candidate ranking / context
 # ---------------------------------------------------------------------------

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from typing import Any
 
 from src.agent.llm_helpers import extract_text, normalize_blocks, parse_json_block
@@ -18,19 +17,17 @@ from src.tools.schemas import ItineraryDraft, PlanningBrief, PlanningBriefPatch
 # Required brief fields
 # ---------------------------------------------------------------------------
 
-# Fields we truly need before planning can start (bare minimum).
-ESSENTIAL_FIELDS = ("destination", "trip_length_days")
-
-# These are filled via smart defaults if the user doesn't mention them.
-# We do NOT ask about them upfront — the user can refine after seeing the first draft.
-NICE_TO_HAVE_FIELDS = (
+# All 8 fields must be collected before planning can start.
+ESSENTIAL_FIELDS = (
+    "destination",
+    "trip_length_days",
     "dates_or_month",
     "travel_party",
     "budget",
-    "pace",
+    "priorities",
+    "dietary_preferences",
+    "hotel_preference",
 )
-
-# Smart defaults applied when user doesn't provide nice-to-have info
 # ---------------------------------------------------------------------------
 # Core intake functions
 # ---------------------------------------------------------------------------
@@ -151,18 +148,12 @@ def merge_brief(existing: PlanningBrief, patch: PlanningBriefPatch) -> PlanningB
 
 
 def missing_essential_fields(brief: PlanningBrief) -> list[str]:
-    """Check which essential (blocking) fields are still missing."""
+    """Check which of the 8 essential fields are still missing."""
     missing: list[str] = []
     if not brief.destination:
         missing.append("destination")
     if not brief.trip_length_days:
         missing.append("trip_length_days")
-    return missing
-
-
-def missing_nice_to_have_fields(brief: PlanningBrief) -> list[str]:
-    """Nice-to-have fields we ask about in the first follow-up (non-blocking)."""
-    missing: list[str] = []
     if not brief.dates_or_month:
         missing.append("dates_or_month")
     if not brief.travel_party:
@@ -171,32 +162,31 @@ def missing_nice_to_have_fields(brief: PlanningBrief) -> list[str]:
         missing.append("budget")
     if not brief.priorities:
         missing.append("priorities")
-    # constraints/must-avoid intentionally excluded — user raises these during planning
+    # dietary_preferences: [] or ["none"] both count as filled per spec.
+    # The clarifying question logic will mention dietary when asking about other fields.
+    if not brief.hotel_preference:
+        missing.append("hotel_preference")
     return missing
 
 
-def missing_landing_followup_fields(brief: PlanningBrief) -> list[str]:
-    """Fields to ask about in the single landing follow-up.
+def validate_brief_ready(brief: PlanningBrief) -> tuple[bool, list[str]]:
+    """Final gate check: returns (True, []) if all 8 fields are filled.
 
-    Includes essential + nice-to-have (dates, party, budget, priorities).
-    constraints/must-avoid are excluded — user can mention them any time during planning.
+    Returns (False, [list of missing field names]) otherwise.
+    dietary_preferences=[] or ["none"] both count as filled.
+    priorities with at least one item counts as filled.
     """
-    return missing_essential_fields(brief) + missing_nice_to_have_fields(brief)
+    missing = missing_essential_fields(brief)
+    return (len(missing) == 0, missing)
 
 
-def apply_smart_defaults(brief: PlanningBrief) -> PlanningBrief:
-    """Fill in sensible defaults for missing non-essential fields."""
-    data = brief.model_dump(mode="python")
-    smart_defaults = {
-        "dates_or_month": _default_dates_or_month(),
-        "travel_party": "solo",
-        "budget": "mid",
-        "pace": "balanced",
-    }
-    for field, default in smart_defaults.items():
-        if not data.get(field):
-            data[field] = default
-    return PlanningBrief.model_validate(data)
+def apply_pace_default(brief: PlanningBrief) -> PlanningBrief:
+    """Apply default pace if not set. Only pace gets a default (not in required 8)."""
+    if not brief.pace:
+        data = brief.model_dump(mode="python")
+        data["pace"] = "balanced"
+        return PlanningBrief.model_validate(data)
+    return brief
 
 
 def build_clarifying_reply(
@@ -212,24 +202,36 @@ def build_clarifying_reply(
     return _build_clarifying_reply_fallback(brief, missing)
 
 
-def build_landing_followup_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
-    """Ask for the bare minimum needed to start — destination and/or trip length only."""
-    joined = _join_field_labels(missing, user_message)
-    return f"Just tell me {joined} and I'll start building your itinerary right away!"
-
-
-def build_workspace_handoff_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
-    """Move the conversation into the workspace without staying stuck in landing."""
-    joined = _join_field_labels(missing, user_message)
-    return (
-        f"I've opened the workspace so we can keep moving, but I still need {joined} "
-        "before I can build a real itinerary. Reply here on the left and I'll update it as soon as I have that."
-    )
 
 
 # ---------------------------------------------------------------------------
 # Claude-powered clarifying reply
 # ---------------------------------------------------------------------------
+
+
+FIELD_GUIDANCE = {
+    "destination": "Ask which city or region they'd like to visit.",
+    "trip_length_days": "Ask how many days they have for the trip.",
+    "dates_or_month": "Ask when they're planning to go (specific dates or just a month).",
+    "travel_party": "Ask who's coming along. Options: Solo / Couple / Family with kids / Group of friends.",
+    "budget": (
+        "Ask about their budget style. Options: "
+        "Budget (hostels, street food) / Mid-range (boutique hotels, local restaurants) / Luxury (5-star, fine dining)."
+    ),
+    "priorities": (
+        "Ask what matters most on this trip. Example interests: "
+        "Food & dining / Culture & history / Nature & outdoors / Shopping / Nightlife / "
+        "Art & museums / Adventure / Relaxation."
+    ),
+    "dietary_preferences": (
+        "Ask about dietary needs or restrictions. Options: "
+        "Vegetarian / Vegan / Halal / Kosher / Gluten-free / Seafood allergy / No restrictions."
+    ),
+    "hotel_preference": (
+        "Ask what type of accommodation they prefer. Options: "
+        "Boutique hotel / Resort / Airbnb / Hostel / 5-star luxury / Traditional (ryokan, riad, etc.)."
+    ),
+}
 
 
 def _generate_clarifying_reply_with_claude(
@@ -238,25 +240,28 @@ def _generate_clarifying_reply_with_claude(
     brief: PlanningBrief,
     missing: list[str],
 ) -> str | None:
-    """Ask Claude to write a warm clarifying message; returns None on failure."""
-    field_guidance = {
-        "destination": "Ask which city or region they'd like to visit.",
-        "trip_length_days": "Ask how many days they have for the trip.",
-    }
+    """Ask Claude to write a warm clarifying message about missing fields.
+
+    Groups related fields together and provides concrete options/examples.
+    No limit on clarifying rounds — keeps asking until all 8 fields are filled.
+    """
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=300,
+            max_tokens=500,
             system=(
-                "You write a very short, warm clarifying message for a travel-planning assistant.\n"
-                "Reply in plain text only.\n"
-                "Reply in the same language the user is writing in.\n"
+                "You write a warm, conversational clarifying message for a travel-planning assistant.\n"
+                "Reply in plain text only. Reply in the same language the user is writing in.\n"
                 "Rules:\n"
-                "- Only ask for the ESSENTIAL missing fields listed (destination and/or trip length).\n"
-                "- Do NOT repeat any information the user already gave.\n"
-                "- Keep it to 1-2 short sentences max. No bullet lists.\n"
-                "- Sound warm, casual, and eager to start planning.\n"
-                "- Make it clear that once you know these basics, you'll start building immediately.\n"
+                "- Ask about the MISSING fields listed below, using the provided guidance and example options.\n"
+                "- Group related fields together naturally (e.g., budget + accommodation, travel party + priorities).\n"
+                "- Include specific options/examples from the guidance so the user can pick easily.\n"
+                "- Do NOT repeat any information the user already gave — acknowledge what you know.\n"
+                "- Sound warm, casual, and enthusiastic about planning their trip.\n"
+                "- Keep it concise but include enough detail for the user to answer easily.\n"
+                "- If only 1-2 fields are missing, keep it very short (1-2 sentences).\n"
+                "- If many fields are missing, group them into 2-3 natural questions.\n"
+                "- Make it clear you need these details before you can start building the itinerary.\n"
             ),
             messages=[
                 {
@@ -265,7 +270,11 @@ def _generate_clarifying_reply_with_claude(
                         {
                             "known_brief": brief.model_dump(mode="json"),
                             "missing_fields": missing,
-                            "field_guidance": {field: field_guidance[field] for field in missing if field in field_guidance},
+                            "field_guidance": {
+                                field: FIELD_GUIDANCE[field]
+                                for field in missing
+                                if field in FIELD_GUIDANCE
+                            },
                         },
                         ensure_ascii=False,
                     ),
@@ -286,47 +295,33 @@ def _generate_clarifying_reply_with_claude(
 def _build_clarifying_reply_fallback(brief: PlanningBrief, missing: list[str]) -> str:
     parts: list[str] = []
     if "destination" in missing:
-        parts.append("which city you'd like to visit")
+        parts.append("which city or region you'd like to visit")
     if "trip_length_days" in missing:
         parts.append("how many days you have")
+    if "dates_or_month" in missing:
+        parts.append("when you're planning to go (dates or month)")
+    if "travel_party" in missing:
+        parts.append("who's coming along (solo / couple / family / friends)")
+    if "budget" in missing:
+        parts.append("your budget style (budget / mid-range / luxury)")
+    if "priorities" in missing:
+        parts.append("what matters most — food, culture, nature, shopping, nightlife, adventure, relaxation")
+    if "dietary_preferences" in missing:
+        parts.append("any dietary needs (vegetarian, vegan, halal, gluten-free, or no restrictions)")
+    if "hotel_preference" in missing:
+        parts.append("your accommodation preference (boutique hotel / resort / Airbnb / hostel / 5-star / traditional)")
 
     if not parts:
         return "I have enough to get started — building your itinerary now!"
 
-    joined = " and ".join(parts)
-    return f"I'm almost ready to start planning! Just need to know {joined}, and I'll get right to it."
+    if len(parts) == 1:
+        return f"Almost there! I just need to know {parts[0]}, and I'll start building your itinerary."
+    if len(parts) == 2:
+        joined = " and ".join(parts)
+        return f"I'm almost ready to start planning! Just need to know {joined}."
+    joined = ", ".join(parts[:-1]) + f", and {parts[-1]}"
+    return f"I'd love to start planning! To build the perfect itinerary, I need a few more details: {joined}."
 
-
-# ---------------------------------------------------------------------------
-# Field-label helpers
-# ---------------------------------------------------------------------------
-
-
-def _join_field_labels(fields: list[str], user_message: str) -> str:
-    labels = [_field_label(field, user_message) for field in fields]
-    if not labels:
-        return "a couple more trip details"
-    if len(labels) == 1:
-        return labels[0]
-    if len(labels) == 2:
-        return " and ".join(labels)
-    return ", ".join(labels[:-1]) + f", and {labels[-1]}"
-
-
-def _field_label(field: str, user_message: str) -> str:
-    labels = {
-        "destination": "where you'd like to go",
-        "trip_length_days": "how many days you have",
-        "dates_or_month": "rough dates or month",
-        "travel_party": "who's traveling",
-        "budget": "your budget range",
-        "priorities": "what matters most on this trip",
-    }
-    return labels.get(field, "a missing trip detail")
-
-
-def _default_dates_or_month() -> str:
-    return datetime.now().strftime("%B")
 
 
 # ---------------------------------------------------------------------------
