@@ -1,177 +1,127 @@
 # Vela
 
-Vela is an AI-powered travel itinerary agent built for the Affinity Labs assessment. The goal is to turn a conversational trip request into a realistic multi-day itinerary that builds live in a split-panel UI while the agent works.
+Vela is an AI-powered travel itinerary agent built for the Affinity Labs assessment. It turns a conversational trip request into a structured, day-by-day itinerary that builds live in a split-panel UI while the agent works.
 
-## Assessment Requirements
+## What It Does
 
-This repository is being built against the original PDF brief. The non-negotiable requirements are:
+A traveller opens Vela, describes a trip in natural language, and watches the itinerary assemble in real time:
 
-- FastAPI backend
-- Anthropic Claude as the LLM
-- Pydantic schemas for tool I/O and API contracts
-- A split-panel UI: conversation on the left, live itinerary on the right
-- Required tools: `get_hotels`, `get_restaurants`, `get_experiences`, `get_weather`, `get_daily_structure`
-- Conversation memory so the plan updates when preferences change mid-chat
-- Structured itinerary output with day cards, venue tiles, and booking CTAs
+1. **Intake** — the agent asks focused clarifying questions until 8 essential fields are filled (destination, dates, party, budget, interests, dietary preferences, accommodation type, trip length)
+2. **Research** — weather, hotels, restaurants, and experiences are gathered in parallel from live APIs, with context-aware status updates ("Searching Tokyo hotels…")
+3. **Compose** — Claude drafts a day-by-day route from ranked candidates, clustered by neighborhood to minimize transit
+4. **Adapt** — changing a preference mid-conversation triggers a selective rerun: only affected tools re-execute, preserving unchanged data
 
-Mock data is acceptable. The assessment is testing product thinking, architecture, orchestration, and UX quality rather than third-party API integration.
+The result is a complete, readable plan with booking links, weather context, budget estimates, packing suggestions, and visa requirements.
 
-## Product Goal
-
-A traveller should be able to:
-
-1. Describe a trip in natural language
-2. Answer a few concrete clarifying questions when key trip information is missing
-3. Stay in a single-column intake flow for at most one focused follow-up round before moving into the workspace
-4. Watch hotels, restaurants, experiences, and weather appear in real time once the canvas opens
-5. End with a day-by-day plan that feels coherent, clickable, and useful
-6. Change a preference mid-conversation and see the plan adapt instead of restarting
-
-## Chosen Technical Direction
-
-The brief leaves the UI stack open. For this project, the target architecture is:
-
-- Backend: FastAPI
-- Agent runtime: Anthropic Messages API for intake, clarification, copy polish, and final response
-- Data validation: Pydantic v2
-- Frontend: React + TypeScript + Vite
-- Streaming: Server-Sent Events from FastAPI to the UI
-- State: in-memory conversation/session store for the assessment, designed so it can later be replaced by Redis or Postgres
-
-Why this direction:
-
-- FastAPI + SSE is a fast, reliable way to stream itinerary updates into the UI
-- React is the fastest route to a polished split-panel product experience
-- Vite keeps the frontend simple and avoids overlapping backend concerns with FastAPI
-- In-memory session state is enough for an interview build while keeping the architecture clean
-- Claude is used where it adds the most value: extracting intent, asking better questions, drafting the itinerary, and warming up the final copy
-- Code still provides soft guardrails, quality checks, selective reruns, and repair passes so the plan stays stable
-
-## Target Architecture
+## Architecture
 
 ```text
-/src
-  /agent
-    prompts.py             # system prompt and orchestration instructions
-    orchestrator.py        # Claude loop, tool execution, synthesis
-    state.py               # conversation and itinerary state models
-  /tools
-    schemas.py             # tool input/output models
-    registry.py            # Claude tool schema definitions
-    mock_data.py           # fallback data and itinerary scaffolding
-    live_weather.py        # Open-Meteo live weather snapshot
-    live_restaurants.py    # Google Places restaurant search
-    live_experiences.py    # Google Places experience search
-    live_hotels.py         # Google Places hotel POI search
-    live_daily_structure.py# code-led itinerary planner
-  /api
-    main.py                # FastAPI app
-    models.py              # API request/response/event models
-    dependencies.py        # settings and shared services
-  /ui
-    ...                    # React app
-/tests
-  ...                      # unit and integration tests
-/docs
-  PRD.md
-  IMPLEMENTATION_PLAN.md
+src/
+  agent/
+    orchestrator.py         # Lead agent loop — intake → gather → compose → reply
+    intake.py               # 8-field gate, brief extraction, clarifying questions
+    research.py             # Tool planning, parallel execution, candidate scoring
+    composer.py             # Daily structure generation, verify/repair, polish
+    preference_update.py    # Changed-field detection, selective rerun logic
+    prompts.py              # System prompt and sub-task prompts
+    state.py                # ConversationState, AgentEvent models
+    llm_helpers.py          # Claude API response normalization
+  tools/
+    schemas.py              # All Pydantic I/O models (PlanningBrief, HotelOption, etc.)
+    registry.py             # Tool specs, handlers, Claude tool schema generation
+    live_weather.py         # Open-Meteo integration
+    live_hotels.py          # Google Places hotel search
+    live_restaurants.py     # Google Places restaurant search with dedup
+    live_experiences.py     # Google Places experience search
+    live_daily_structure.py # Code-led itinerary skeleton builder
+    live_budget.py          # Budget estimation
+    live_visa.py            # Visa requirements
+    live_packing.py         # Weather-aware packing suggestions
+    mock_data.py            # Fallback data when API keys are absent
+  api/
+    main.py                 # FastAPI app, /chat/stream SSE endpoint, /places/photo proxy
+    models.py               # ChatRequest, ChatResponse
+    dependencies.py         # Settings, session store, DI
+    publish_store.py        # Shareable trip page storage
+  ui/                       # React 19 + TypeScript + Vite + Tailwind CSS 4 + Motion
+tests/
+  test_agent.py             # Intake gate, selective rerun, tool planning (8 tests)
+  test_tools.py             # Tool output structure and coverage (7 tests)
 ```
 
-## Data Providers And Hotel CTA Tradeoff
+## Technical Stack
 
-The current build uses a mixed real-data strategy:
+| Layer | Choice | Why |
+|-------|--------|-----|
+| Backend | Python 3.13 / FastAPI | Required by spec |
+| LLM | Anthropic Claude (claude-opus-4-1-20250805) | Required by spec |
+| Data validation | Pydantic v2 | Required by spec |
+| Frontend | React 19 / TypeScript / Vite | Fine-grained control over streaming state and progressive rendering |
+| Streaming | Server-Sent Events (SSE) | Real-time tool status → incremental UI updates |
+| APIs | Google Places (hotels, restaurants, experiences), Open-Meteo (weather) | Live data with mock fallback |
 
-- Weather: Open-Meteo live weather snapshot
-- Restaurants: Google Places Text Search + Places photo proxy
-- Experiences: Google Places Text Search + Places photo proxy
-- Hotels: Google Places hotel POI search + Places photo proxy
+## Key Design Decisions
 
-This was a deliberate tradeoff.
+**1. Single orchestrator with modular phases** — One `AgentOrchestrator` coordinates four phases: intake → research → compose → adapt. Each phase is a separate module (`intake.py`, `research.py`, `composer.py`, `preference_update.py`) that can be tested and iterated independently. This avoids a monolithic agent while keeping the control flow explicit rather than hidden in prompt chaining.
 
-For hotels, the stronger long-term production path would be Booking.com Demand API because it is better suited for real availability, pricing, and affiliate/deep-link flows. However, Booking Demand API requires partner onboarding, authentication, and an affiliate ID, which is not realistic within the time constraints of this assessment build.
+**2. Agentic tool-use loop (standard Anthropic pattern)** — Claude proposes tools → parallel execution via `ThreadPoolExecutor` → results returned to Claude → Claude proposes the next round. Two rounds: Round 1 gathers base data (weather, hotels, restaurants, experiences), Round 2 gathers dependent data (budget, packing) using Round 1 context. Falls back to a deterministic `build_tool_plan()` if the loop fails.
 
-Because the PDF explicitly allows mock data and prioritizes product thinking over third-party integrations, the current implementation uses Google hotel POIs plus standard booking/location CTAs instead of a true affiliate hotel integration.
+**3. Typed tool I/O via Pydantic** — Every tool has a Pydantic input model and output model in `schemas.py`. The registry auto-generates Claude-compatible JSON schemas from these models. This means tool contracts are validated at both ends — Claude can't pass malformed input, and tool outputs are guaranteed to match the shape the composer expects.
 
-In other words:
+**4. 8-field intake gate** — All essential trip parameters (destination, dates, party, budget, interests, dietary, accommodation type, trip length) must be collected before planning starts. The agent asks clarifying questions with concrete options until the gate passes. No smart defaults that mask missing information — the plan is only as good as the brief.
 
-- hotel cards use real place data and real images
-- hotel CTAs are currently standard outbound links, not affiliate links
-- a future production version would replace this with Booking Demand API
+**5. Selective rerun with code-level enforcement** — When a user changes "budget", a `FIELD_TOOL_DEPENDENCIES` graph determines that only `get_hotels`, `get_restaurants`, and `estimate_budget` need to rerun. This is enforced at the code level: Claude's tool proposals are filtered against a computed `allowed_tools` set before execution. Unchanged tool results are preserved from the previous itinerary via `payloads_from_previous()`.
 
-## Current Status
+**6. Candidate scoring before composition** — Hotels, restaurants, and experiences are scored against the planning brief (neighborhood match, interest alignment, rating quality, hidden-gem affinity) and ranked before being passed to the composer. This ensures Claude's day-by-day structure draws from the strongest candidates rather than arbitrary API order.
 
-The repository now has:
+**7. Neighborhood clustering** — Venues are grouped by neighborhood and assigned to days so each day stays geographically coherent. Day 1 anchors around the hotel neighborhood. This prevents plans where the traveller zig-zags across the city.
 
-- a single-column intake flow that asks for missing key details once, then moves into the workspace on the next user reply
-- smart defaults for missing non-essential fields, including the current month when the user does not give dates yet
-- a structured `PlanningBrief` stored in session state
-- a lead-agent orchestration loop that decides whether to ask, gather, adapt, or plan
-- parallel real-data gathering for weather, hotels, restaurants, and experiences
-- a Claude-led planning layer that drafts day-by-day structure from real tool context
-- a quality rubric plus verify/repair pass before the final itinerary is shown
-- selective reruns when user preferences change, instead of rebuilding everything
-- Claude-assisted copy polish for warmer, more human itinerary language
+**8. SSE streaming with progressive rendering** — Each tool completion emits an SSE event that triggers a visible update on the right panel. The frontend reveals slides sequentially with staggered timing, and skeleton placeholders highlight which section is actively being built — synced with the tool step chain on the left panel.
 
-The highest-value remaining work is itinerary quality, UI polish, and stronger selective adaptation for more change types.
+## Data Providers
 
-## Planning Logic
+| Data | Source | Notes |
+|------|--------|-------|
+| Weather | Open-Meteo API | Live forecast, no auth required |
+| Hotels | Google Places Text Search | Real place data and photos; CTAs link to Google Maps |
+| Restaurants | Google Places Text Search | Deduped across queries; heuristic signature dish suggestions |
+| Experiences | Google Places Text Search | Category normalization (14 types); duration/cost estimates |
+| Budget | Code heuristic | Derived from hotel rates + meal/activity cost tiers |
+| Visa | Code heuristic | Based on destination country |
+| Packing | Code heuristic | Weather-driven suggestions |
 
-Vela now plans in three stages:
-
-1. Intake and readiness gate
-   - Extract the trip brief from conversation
-   - Detect missing required information
-   - Infer soft constraints from natural language, such as "not too packed", "avoid long queues", or safety concerns
-   - Ask only the missing questions, using concrete examples and options
-2. Parallel gather
-   - Once the brief is ready, gather weather, hotels, restaurants, and experiences in parallel
-3. Compose, verify, and adapt
-   - Let Claude draft the itinerary structure from the gathered venue set
-   - Rank and filter venue candidates so the plan favors stronger fits, lower repetition, and more local or hidden-gem texture when requested
-   - Run a quality rubric to check coverage, geography, pace, duplication, venue-type validity, and interest fit
-   - Prefer a usable day skeleton: Morning, Lunch, Afternoon, Dinner, with Evening when it adds value
-   - Repair the draft if needed before showing it
-   - When the user changes budget, pace, neighborhood, or priorities, selectively rerun only the affected tools
-
-### Minimum information before opening the canvas
-
-Vela uses a two-step readiness policy:
-
-- First landing reply: ask for any missing destination, trip length, dates/month, travel party, budget, priorities, and constraints in one compact follow-up
-- Second user reply: move into the workspace instead of staying stuck on landing
-- Actual itinerary generation still requires destination and trip length
-- Missing non-essential details are filled with smart defaults and can keep being refined from the left-hand chat
-- Selective reruns follow actual tool-input dependencies, so unaffected gather steps are reused from the current itinerary
+For hotels, the production path would be the Booking.com Demand API for real availability, pricing, and affiliate links. This requires partner onboarding not feasible within the assessment timeframe, so hotel CTAs currently link to Google Maps rather than affiliate booking flows.
 
 ## Local Setup
 
-Install the current Python dependencies:
-
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# Backend
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+uvicorn src.api.main:app --reload
+
+# Frontend
+cd src/ui && npm install && npm run dev
 ```
 
-Run the backend scaffold:
+## Environment Variables (.env)
+
+- `ANTHROPIC_API_KEY` — required
+- `GOOGLE_MAPS_API_KEY` — required for live data (falls back to mock without it)
+
+## Tests
 
 ```bash
-uvicorn src.api.main:app --reload
+pytest tests/ -v
 ```
 
-## Build Priorities
-
-1. Define typed tool schemas and realistic mock data
-2. Implement a conversation-aware Claude orchestration loop
-3. Add a streaming chat API that emits UI events as tools complete
-4. Build the split-panel frontend
-5. Add preference-change handling and itinerary regeneration logic
-6. Polish the UI, tests, README, and demo recording
+15 tests covering intake gate validation, selective rerun logic, tool plan generation, payload preservation, and tool output structure.
 
 ## With More Time
 
-- Replace Google hotel POIs with Booking Demand API for true availability, pricing, and affiliate links
-- Add map awareness and travel-time constraints between venues
-- Persist sessions and itineraries
-- Add budget estimation, packing suggestions, and visa requirements
-- Support export to PDF, Wallet, or shareable trip pages
+- **Verify/repair quality loop** — Re-enable the commented-out verification pass that checks itinerary coverage, geographic coherence, pacing balance, and venue-type diversity, with a Claude-led repair cycle for issues above a severity threshold
+- **Replace Google hotel POIs with Booking Demand API** for true availability, real-time pricing, and affiliate deep links
+- **Production-grade experience data** — Replace heuristic duration/cost estimates with real API data (e.g., Viator, GetYourGuide) for accurate pricing and bookable tickets
+- **Map awareness** — Add travel-time constraints between venues using Google Directions API, ensuring day plans respect actual transit distances
+- **User accounts and persistence** — Add authentication, database-backed session storage, and saved itineraries so users can return to modify plans across sessions
+- **Export** — Support PDF export and shareable public trip pages (shareable page infrastructure is already built)

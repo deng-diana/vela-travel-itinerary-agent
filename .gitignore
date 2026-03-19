@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -6,17 +7,25 @@ __pycache__/
 .coverage
 htmlcov/
 
-.DS_Store
-
+# Environment
 .env
 .venv/
 venv/
 ENV/
+
+# Node / Frontend
 node_modules/
 dist/
 
+# IDE
 .idea/
 .vscode/
 
-node_modules/
-dist/
+# OS
+.DS_Store
+
+# Data
+data/
+
+# Claude Code
+.claude/
