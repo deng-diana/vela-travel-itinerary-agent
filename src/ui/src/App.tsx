@@ -56,6 +56,10 @@ function App() {
 
   // Track destination for context-aware tool messages (ref survives SSE loop closure)
   const destinationRef = useRef('')
+  // Track rerun state and changed fields (refs survive SSE loop closure)
+  const isRerunRef = useRef(false)
+  const changedFieldsRef = useRef<string[]>([])
+  const [changedFields, setChangedFields] = useState<string[]>([])
 
   // Load public itinerary if ?trip= param is present
   useEffect(() => {
@@ -93,6 +97,9 @@ function App() {
     setMessages((current) => [...current, { role: 'user', text: trimmed }])
     setSteps([])
     setLiveNarration('')
+    isRerunRef.current = itinerary !== null
+    changedFieldsRef.current = []
+    setChangedFields([])
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -165,15 +172,36 @@ function App() {
 
     if (streamEvent.type === 'tool_started' && streamEvent.tool_name) {
       setWorkspaceMode(true)
-      const step = makeActiveStep(streamEvent.tool_name, destinationRef.current)
+      const step = makeActiveStep(streamEvent.tool_name, destinationRef.current, isRerunRef.current)
       setSteps((current) => [...current.filter((item) => item.status === 'completed'), step])
       setLiveNarration(step.detail)
       return
     }
 
+    // Special case: analyze_preferences completed carries changed_fields
+    if (streamEvent.type === 'tool_completed' && streamEvent.tool_name === 'analyze_preferences') {
+      setWorkspaceMode(true)
+      const payload = streamEvent.payload as { changed_fields?: string[]; is_rerun?: boolean } | undefined
+      const fields = payload?.changed_fields ?? []
+      changedFieldsRef.current = fields
+      if (fields.length > 0) setChangedFields(fields)
+      const title = fields.length > 0
+        ? `Detected changes: ${fields.map((f) => FIELD_LABELS[f] ?? f).join(', ')}`
+        : 'Preferences analyzed'
+      const completedStep: AgentStep = {
+        id: `analyze_preferences-completed-${Date.now()}`,
+        title,
+        detail: title,
+        status: 'completed',
+      }
+      setSteps((current) => [...current.filter((item) => item.status === 'completed'), completedStep])
+      setLiveNarration(title)
+      return
+    }
+
     if (streamEvent.type === 'tool_completed' && streamEvent.tool_name) {
       setWorkspaceMode(true)
-      const completedStep = makeCompletedStep(streamEvent.tool_name, destinationRef.current)
+      const completedStep = makeCompletedStep(streamEvent.tool_name, destinationRef.current, isRerunRef.current)
       setSteps((current) => {
         const withoutActive = current.filter((item) => item.status === 'completed')
         return [...withoutActive, completedStep]
@@ -299,6 +327,7 @@ function App() {
               isStreaming={isStreaming}
               error={error}
               input={input}
+              changedFields={changedFields}
               onInputChange={setInput}
               onSubmit={handleSubmit}
             />
@@ -325,9 +354,33 @@ function App() {
 // SSE helpers
 // ---------------------------------------------------------------------------
 
-function makeActiveStep(toolName: string, destination: string): AgentStep {
+const FIELD_LABELS: Record<string, string> = {
+  dates_or_month: 'month',
+  budget: 'budget',
+  travel_party: 'travel party',
+  trip_length_days: 'duration',
+  destination: 'destination',
+  dietary_preferences: 'dietary needs',
+  hotel_preference: 'stay type',
+  priorities: 'interests',
+  pace: 'pace',
+}
+
+function makeActiveStep(toolName: string, destination: string, isRerun = false): AgentStep {
   const city = destination || 'destination'
-  const detailByTool: Record<string, string> = {
+  const detailByTool: Record<string, string> = isRerun ? {
+    analyze_preferences: 'Detecting what changed in your preferences.',
+    plan_research: 'Selecting which sections need refreshing.',
+    get_weather: `Refreshing weather data for ${city}.`,
+    get_hotels: `Refreshing hotel options for ${city}.`,
+    get_restaurants: `Refreshing restaurant recommendations for ${city}.`,
+    get_experiences: `Refreshing activities and experiences for ${city}.`,
+    get_daily_structure: `Rebuilding the day-by-day itinerary for ${city}.`,
+    estimate_budget: `Recalculating the budget breakdown for ${city}.`,
+    get_visa_requirements: `Rechecking entry requirements for ${city}.`,
+    get_packing_suggestions: `Updating the packing list for ${city}.`,
+    write_summary: `Writing the updated trip summary for ${city}.`,
+  } : {
     analyze_preferences: `Analyzing preferences and building a research plan for ${city}.`,
     plan_research: `Selecting which data sources to query for ${city}.`,
     get_weather: `Fetching live weather conditions in ${city}.`,
@@ -345,15 +398,26 @@ function makeActiveStep(toolName: string, destination: string): AgentStep {
 
   return {
     id: `${toolName}-active-${Date.now()}`,
-    title: prettyToolName(toolName, city),
+    title: prettyToolName(toolName, city, isRerun),
     detail: detailByTool[toolName] ?? `Working on the ${city} plan.`,
     status: 'active',
   }
 }
 
-function makeCompletedStep(toolName: string, destination: string): AgentStep {
+function makeCompletedStep(toolName: string, destination: string, isRerun = false): AgentStep {
   const city = destination || 'destination'
-  const completedByTool: Record<string, string> = {
+  const completedByTool: Record<string, string> = isRerun ? {
+    plan_research: 'Identified sections to refresh.',
+    get_weather: `${city} weather refreshed.`,
+    get_hotels: `${city} hotel options updated.`,
+    get_restaurants: `${city} dining options updated.`,
+    get_experiences: `${city} experiences updated.`,
+    get_daily_structure: `${city} itinerary rebuilt.`,
+    estimate_budget: `${city} budget recalculated.`,
+    get_visa_requirements: `Entry requirements for ${city} rechecked.`,
+    get_packing_suggestions: `Packing list for ${city} updated.`,
+    write_summary: `${city} trip summary updated.`,
+  } : {
     analyze_preferences: 'Preferences analyzed — research plan ready.',
     plan_research: 'Research strategy selected.',
     get_weather: `${city} weather data received.`,
@@ -371,13 +435,29 @@ function makeCompletedStep(toolName: string, destination: string): AgentStep {
 
   return {
     id: `${toolName}-completed-${Date.now()}`,
-    title: prettyToolName(toolName, city),
+    title: prettyToolName(toolName, city, isRerun),
     detail: completedByTool[toolName] ?? 'Step completed.',
     status: 'completed',
   }
 }
 
-function prettyToolName(toolName: string, city: string): string {
+function prettyToolName(toolName: string, city: string, isRerun = false): string {
+  if (isRerun) {
+    const rerunNames: Record<string, string> = {
+      analyze_preferences: 'Detecting preference changes',
+      plan_research: 'Selecting sections to refresh',
+      get_weather: `Refreshing ${city} weather`,
+      get_hotels: `Refreshing ${city} hotels`,
+      get_restaurants: `Refreshing ${city} restaurants`,
+      get_experiences: `Refreshing ${city} experiences`,
+      get_daily_structure: `Rebuilding ${city} itinerary`,
+      estimate_budget: `Recalculating ${city} budget`,
+      get_visa_requirements: `Rechecking ${city} visa rules`,
+      get_packing_suggestions: `Updating packing list`,
+      write_summary: 'Updating trip summary',
+    }
+    if (rerunNames[toolName]) return rerunNames[toolName]
+  }
   const names: Record<string, string> = {
     analyze_preferences: 'Analyzing trip preferences',
     plan_research: 'Selecting research strategy',

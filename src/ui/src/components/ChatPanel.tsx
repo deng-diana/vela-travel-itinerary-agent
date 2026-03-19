@@ -43,6 +43,7 @@ type ChatPanelProps = {
   isStreaming: boolean
   error: string | null
   input: string
+  changedFields?: string[]
   onInputChange: (value: string) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
 }
@@ -54,20 +55,65 @@ export const ChatPanel = memo(function ChatPanel({
   isStreaming,
   error,
   input,
+  changedFields = [],
   onInputChange,
   onSubmit,
 }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollAreaRef = useRef<HTMLDivElement>(null)
+  const toolChainRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  // Tracks whether we're in "tool execution mode" — toolChain should stay at top
+  const toolPhaseRef = useRef(false)
 
+  // When tool chain first appears: scroll so it sits at the top of the
+  // messages area — history messages scroll above, out of view.
   useEffect(() => {
+    if (steps.length > 0 && !toolPhaseRef.current) {
+      toolPhaseRef.current = true
+      requestAnimationFrame(() => {
+        if (toolChainRef.current && scrollAreaRef.current) {
+          const containerTop = scrollAreaRef.current.getBoundingClientRect().top
+          const chainTop = toolChainRef.current.getBoundingClientRect().top
+          // Scroll chain to just below the top edge (16px breathing room)
+          const offset = chainTop - containerTop + scrollAreaRef.current.scrollTop - 16
+          scrollAreaRef.current.scrollTo({ top: Math.max(0, offset), behavior: 'smooth' })
+        }
+      })
+    }
+    if (steps.length === 0) {
+      toolPhaseRef.current = false
+    }
+  }, [steps])
+
+  // As new steps are added, keep the bottom of the tool chain in view.
+  // This ensures the active step is never cut off — it scrolls into view
+  // as the chain grows downward.
+  useEffect(() => {
+    if (!toolPhaseRef.current || !isStreaming || steps.length <= 1) return
+    requestAnimationFrame(() => {
+      if (!toolChainRef.current || !scrollAreaRef.current) return
+      const chainBottom = toolChainRef.current.getBoundingClientRect().bottom
+      const containerBottom = scrollAreaRef.current.getBoundingClientRect().bottom
+      if (chainBottom > containerBottom - 24) {
+        scrollAreaRef.current.scrollTo({
+          top: scrollAreaRef.current.scrollTop + (chainBottom - containerBottom) + 32,
+          behavior: 'smooth',
+        })
+      }
+    })
+  }, [steps.length, isStreaming])
+
+  // Auto-scroll to bottom — only when NOT in tool-chain phase
+  useEffect(() => {
+    if (toolPhaseRef.current) return
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, liveNarration, isStreaming, steps])
+  }, [messages, liveNarration, isStreaming])
 
   // Reset textarea height when input is cleared (e.g., after submit)
   useEffect(() => {
     if (!input && textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
+      textareaRef.current.style.height = '24px'
     }
   }, [input])
 
@@ -119,7 +165,7 @@ export const ChatPanel = memo(function ChatPanel({
       </div>
 
       {/* Messages */}
-      <div className="messages-area flex-1 overflow-auto px-5 py-4">
+      <div ref={scrollAreaRef} className="messages-area flex-1 overflow-auto px-5 py-4">
         <div className="flex flex-col gap-3">
           {messagesBeforeFinal.map((message, index) =>
             message.role === 'user' ? (
@@ -157,7 +203,9 @@ export const ChatPanel = memo(function ChatPanel({
 
           {/* Tool Steps — live chain shown BEFORE final assistant message */}
           {steps.length > 0 && (
-            <ToolChain steps={steps} isStreaming={isStreaming} />
+            <div ref={toolChainRef}>
+              <ToolChain steps={steps} isStreaming={isStreaming} changedFields={changedFields} />
+            </div>
           )}
 
           {/* Final assistant message — rendered AFTER tool steps with typewriter */}
@@ -200,53 +248,50 @@ export const ChatPanel = memo(function ChatPanel({
       >
         <form onSubmit={onSubmit}>
           <div
-            className="relative flex items-end rounded-lg"
+            className="relative flex items-center rounded-lg"
             style={{
               background: 'var(--bg-input)',
               border: '1px solid var(--color-border)',
-              padding: '16px 24px',
+              padding: '10px 16px',
             }}
           >
-            <div className="relative flex-1">
-              {/* Custom thick blinking caret — visible when input is empty */}
-              {!input && <div className="custom-caret" style={{ position: 'absolute', left: 0, top: '12px' }} />}
               <textarea
                 ref={textareaRef}
-                className="w-full outline-none resize-none bg-transparent"
+                className="flex-1 outline-none resize-none bg-transparent"
                 style={{
                   color: 'var(--color-text)',
                   fontFamily: 'var(--font-editorial)',
                   fontSize: '1rem',
+                  height: '24px',
                   minHeight: '24px',
                   maxHeight: '160px',
                   overflowY: 'auto',
-                  lineHeight: '1.5',
-                  caretColor: input ? 'var(--color-accent)' : 'transparent',
+                  lineHeight: '24px',
+                  padding: 0,
+                  margin: 0,
+                  caretColor: 'var(--color-accent)',
                 }}
               value={input}
               onChange={(e) => {
                 onInputChange(e.target.value)
-                // Auto-resize: reset height to auto, then set to scrollHeight
                 const el = e.target
-                el.style.height = 'auto'
+                el.style.height = '24px'
                 el.style.height = Math.min(el.scrollHeight, 160) + 'px'
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   e.currentTarget.form?.requestSubmit()
-                  // Reset height after submit
                   if (textareaRef.current) {
-                    textareaRef.current.style.height = 'auto'
+                    textareaRef.current.style.height = '24px'
                   }
                 }
               }}
-              placeholder="Refine the trip, change the pace, add a preference..."
+              placeholder="Refine your trip..."
               rows={1}
             />
-            </div>
             <button
-              className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80 mb-[2px]"
+              className="flex-shrink-0 h-7 w-7 rounded-full flex items-center justify-center transition-opacity hover:opacity-80"
               style={{
                 background: 'var(--color-accent)',
                 color: '#000000',
@@ -258,7 +303,7 @@ export const ChatPanel = memo(function ChatPanel({
               aria-label="Send"
               title="Send message"
             >
-              <ArrowUp size={18} strokeWidth={2.5} />
+              <ArrowUp size={14} strokeWidth={2.5} />
             </button>
           </div>
         </form>
@@ -319,46 +364,63 @@ function TypewriterAssistantMessage({ text }: { text: string }) {
 // Shows each step inline as it happens. Collapses when done.
 // ---------------------------------------------------------------------------
 
-function buildToolSummary(completedSteps: AgentStep[]): string {
-  const toolNames = completedSteps.map((s) => s.id.replace(/-completed-\d+$/, ''))
+const FIELD_LABELS: Record<string, string> = {
+  dates_or_month: 'month',
+  budget: 'budget',
+  travel_party: 'travel party',
+  trip_length_days: 'duration',
+  destination: 'destination',
+  dietary_preferences: 'dietary needs',
+  hotel_preference: 'stay type',
+  priorities: 'interests',
+  pace: 'pace',
+}
 
+function buildToolSummary(completedSteps: AgentStep[], changedFields: string[]): string {
+  const toolNames = completedSteps.map((s) => s.id.replace(/-completed-\d+$/, ''))
+  const isRerun = changedFields.length > 0
+
+  if (isRerun) {
+    // During rerun: list what was refreshed
+    const refreshedParts: string[] = []
+    if (toolNames.includes('get_weather')) refreshedParts.push('weather')
+    if (toolNames.some((n) => ['get_hotels', 'get_restaurants', 'get_experiences'].includes(n))) {
+      refreshedParts.push('venues')
+    }
+    if (toolNames.includes('get_daily_structure')) refreshedParts.push('itinerary')
+    if (toolNames.includes('estimate_budget')) refreshedParts.push('budget')
+    if (toolNames.includes('get_packing_suggestions')) refreshedParts.push('packing list')
+
+    const changeLabels = changedFields.map((f) => FIELD_LABELS[f] ?? f).join(', ')
+    const refreshed = refreshedParts.length > 0 ? ` · refreshed ${refreshedParts.join(', ')}` : ''
+    return `Updated plan for ${changeLabels}${refreshed}`
+  }
+
+  // First run summary
   const parts: string[] = []
   const toolCount = toolNames.filter(
     (n) => !['analyze_preferences', 'plan_research', 'write_summary'].includes(n)
   ).length
-
-  // Count data sources
   const dataTools = ['get_weather', 'get_hotels', 'get_restaurants', 'get_experiences']
   const dataCount = dataTools.filter((t) => toolNames.includes(t)).length
 
-  if (dataCount > 0) {
-    parts.push(`queried ${dataCount} data sources`)
-  }
-
-  if (toolNames.includes('get_daily_structure')) {
-    parts.push('built day-by-day plan')
-  }
-
-  if (toolNames.includes('estimate_budget')) {
-    parts.push('estimated costs')
-  }
-
-  if (toolNames.includes('get_packing_suggestions')) {
-    parts.push('prepared packing list')
-  }
+  if (dataCount > 0) parts.push(`queried ${dataCount} data sources`)
+  if (toolNames.includes('get_daily_structure')) parts.push('built day-by-day plan')
+  if (toolNames.includes('estimate_budget')) parts.push('estimated costs')
+  if (toolNames.includes('get_packing_suggestions')) parts.push('prepared packing list')
 
   const prefix = `Ran ${toolCount} tools`
   return parts.length > 0 ? `${prefix} · ${parts.join(', ')}` : `Ran ${toolCount} tools`
 }
 
-function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: boolean }) {
+function ToolChain({ steps, isStreaming, changedFields = [] }: { steps: AgentStep[]; isStreaming: boolean; changedFields?: string[] }) {
   const [collapsed, setCollapsed] = useState(false)
 
   const completedSteps = steps.filter((s) => s.status === 'completed')
   const activeStep = steps.find((s) => s.status === 'active')
   const allDone = !activeStep && completedSteps.length > 0 && !isStreaming
 
-  const summary = allDone ? buildToolSummary(completedSteps) : ''
+  const summary = allDone ? buildToolSummary(completedSteps, changedFields) : ''
 
   // Auto-collapse when streaming ends
   const wasStreaming = useRef(isStreaming)
