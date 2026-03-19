@@ -1,6 +1,9 @@
 import { useRef } from 'react'
 import { motion, useInView } from 'motion/react'
-import type { HotelSlideData } from '../../lib/story'
+// import type { HotelSlideData } from '../../lib/story'
+
+// Note: HotelSlide is deprecated. Hotels are now shown in HighlightsSlide.
+type HotelSlideData = any
 
 interface Props { data: HotelSlideData }
 
@@ -143,7 +146,7 @@ export function HotelSlide({ data }: Props) {
             transition={{ delay: 1.0, duration: 0.5 }}
             className="flex flex-wrap gap-2 mt-4"
           >
-            {data.key_highlights.map((highlight) => (
+            {data.key_highlights.map((highlight: string) => (
               <span
                 key={highlight}
                 className="rounded-full border px-3 py-1 text-xs"

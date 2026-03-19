@@ -604,20 +604,35 @@ def compose_final_reply(
             "stay more centrally, or make the trip more food-focused."
         ), {}
 
+    # Build a compact summary of the itinerary for the prompt (avoid sending full data)
+    compact_itin = {
+        "destination": itinerary.destination,
+        "trip_length_days": itinerary.trip_length_days,
+        "interests": itinerary.interests,
+        "selected_hotel": itinerary.selected_hotel.name if itinerary.selected_hotel else None,
+        "hotel_neighborhood": itinerary.selected_hotel.neighborhood if itinerary.selected_hotel else None,
+        "restaurant_count": len(itinerary.restaurants),
+        "top_restaurants": [r.name for r in itinerary.restaurants[:3]],
+        "experience_count": len(itinerary.experiences),
+        "top_experiences": [e.name for e in itinerary.experiences[:3]],
+        "day_themes": [d.theme for d in itinerary.days],
+        "weather": itinerary.weather.conditions_summary if itinerary.weather else None,
+        "budget_total": itinerary.budget_estimate.total_estimated_usd if itinerary.budget_estimate else None,
+    }
+
     response = client.messages.create(
         model=model,
-        max_tokens=900,
+        max_tokens=500,
         system=(
             f"{system_prompt}\n\n"
             "You are Vela, a thoughtful travel concierge. "
             "Return JSON with two keys: 'reply' (string) and 'story_meta' (object).\n"
-            "reply: short final message in plain text, same language as user. "
-            "Include 'Weather & What to Wear' (2-3 bullets) when weather is available. "
-            "Short trip summary + one useful follow-up question. Under 400 words. Do not paste full itinerary.\n"
+            "reply: concise summary (under 150 words), same language as user. "
+            "Mention hotel, key highlight, food anchor. End with one follow-up question.\n"
             "story_meta: {\n"
-            '  "trip_tone": one evocative 2-4 word descriptor, e.g. "romantic & foodie" / "cultural deep-dive" / "adventure & nature",\n'
-            '  "key_moments": array of 3-5 strings, each a vivid standout moment from the itinerary, e.g. "Sunrise at Fushimi Inari", "Omakase dinner at Sukiyabashi Jiro",\n'
-            '  "cultural_notes": array of 2-4 strings, practical etiquette/customs for this destination, e.g. "Remove shoes before entering temples", "Avoid eating or drinking while walking"\n'
+            '  "trip_tone": 2-4 word descriptor e.g. "culinary & artistic",\n'
+            '  "key_moments": array of 3-5 vivid standout moments,\n'
+            '  "cultural_notes": array of 2-3 practical etiquette tips\n'
             "}\n"
             "Return only valid JSON."
         ),
@@ -628,7 +643,7 @@ def compose_final_reply(
                     {
                         "planning_brief": brief.model_dump(mode="json"),
                         "changed_fields": sorted(changed_fields),
-                        "itinerary": itinerary.model_dump(mode="json"),
+                        "itinerary_summary": compact_itin,
                     },
                     ensure_ascii=False,
                 ),

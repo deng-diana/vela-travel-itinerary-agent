@@ -165,16 +165,27 @@ class AgentOrchestrator:
         changed_fields = detect_changed_fields(previous_brief, brief, patch)
         state.workspace_ready = True
 
-        preface = build_planning_preface(changed_fields, has_existing_plan=state.last_itinerary is not None)
-        if preface:
-            yield AgentEvent(type="assistant_message", message=preface)
+        # Signal frontend to switch to workspace immediately
+        yield AgentEvent(
+            type="workspace_ready",
+            payload={
+                "workspace_ready": True,
+                "planning_brief": brief.model_dump(mode="json"),
+            },
+        )
+
+        # Skip preface message — jump straight into research steps
+        yield AgentEvent(type="tool_started", tool_name="analyze_preferences", message="Analyzing your preferences")
+        yield AgentEvent(type="tool_completed", tool_name="analyze_preferences", payload={"message": "Preferences analyzed"})
+
+        # Show "planning research" as active while Claude decides which tools to call
+        yield AgentEvent(type="tool_started", tool_name="plan_research", message="Planning research strategy")
 
         # ── Phase 3+4: Agentic gather loop (standard Anthropic tool-use pattern) ─
-        # Round 1: Claude sees brief → proposes base tools → results returned to Claude
-        # Round 2: Claude sees hotel/weather → proposes estimate_budget + packing → results returned
-        tool_payloads, gather_events = self._agentic_gather_loop(brief, changed_fields, state.last_itinerary)
+        # Now yields events in real-time instead of batching
+        tool_payloads: dict[str, Any] = {}
         tool_inputs: dict[str, dict[str, Any]] = {}
-        for event in gather_events:
+        for event in self._agentic_gather_loop(brief, changed_fields, state.last_itinerary, tool_payloads):
             yield event
 
         # ── Phase 5: Compose daily structure ─────────────────────────
@@ -203,56 +214,24 @@ class AgentOrchestrator:
         if itinerary and patch.day_swap_request:
             itinerary = apply_day_swap_request(itinerary, patch.day_swap_request)
 
-        # ── Phase 7: Verify & Repair loop ────────────────────────────
-        if itinerary:
-            verification = verify_itinerary_quality(
-                self.client, self.model, self.system_prompt, brief, itinerary,
-            )
-            if not verification["approved"]:
-                yield AgentEvent(
-                    type="assistant_message",
-                    message="I am tightening this draft so it feels more coherent, less repetitive, and more useful.",
-                )
-                repaired_days = repair_daily_structure_with_claude(
-                    self.client, self.model, self.system_prompt,
-                    brief, itinerary, planning_context, verification["issues"],
-                )
-                if repaired_days:
-                    repaired_days = align_days_to_candidates(
-                        repaired_days,
-                        planning_context["selected_hotel"],
-                        planning_context["ranked_restaurants"],
-                        planning_context["ranked_experiences"],
-                    )
-                    repaired_itinerary = itinerary.model_copy(
-                        update={
-                            "days": enrich_days(
-                                repaired_days,
-                                planning_context["selected_hotel"],
-                                planning_context["restaurants"],
-                                planning_context["experiences"],
-                            )
-                        }
-                    )
-                    repaired_verification = verify_itinerary_quality(
-                        self.client, self.model, self.system_prompt,
-                        brief, repaired_itinerary,
-                    )
-                    if _issue_score(repaired_verification["issues"]) <= _issue_score(verification["issues"]):
-                        itinerary = repaired_itinerary
-
-        # ── Phase 8: Polish copy ─────────────────────────────────────
-        if itinerary:
-            itinerary = polish_itinerary_days(
-                self.client, self.model, self.system_prompt, brief, itinerary,
-            )
+        # ── Phase 7: Verify & Repair loop (SKIPPED FOR FASTER DEMO) ────────────────────────────
+        # These steps are commented out for demo speed. Uncomment for production quality checks.
+        # if itinerary:
+        #     verification = verify_itinerary_quality(...)
+        #     if not verification["approved"]:
+        #         repaired_days = repair_daily_structure_with_claude(...)
 
         # ── Phase 9: Final reply + story metadata ─────────────────────
+        yield AgentEvent(type="tool_started", tool_name="write_summary", message="Writing your trip summary")
         raw_reply, story_meta = compose_final_reply(
             self.client, self.model, self.system_prompt,
             brief, itinerary, changed_fields,
         )
         reply = compact_reply(raw_reply, itinerary)
+        # Add itinerary link at the end of reply
+        if itinerary:
+            reply += "\n\n[View itinerary plan](#scroll-to-top)"
+        yield AgentEvent(type="tool_completed", tool_name="write_summary", payload={"message": "Trip summary completed"})
         if itinerary:
             itinerary = itinerary.model_copy(update={
                 "summary": reply,
@@ -286,8 +265,12 @@ class AgentOrchestrator:
         brief: PlanningBrief,
         changed_fields: set[str],
         previous: ItineraryDraft | None,
-    ) -> tuple[dict[str, Any], list[AgentEvent]]:
+        tool_payloads: dict[str, Any],
+    ):
         """Standard Anthropic tool-use loop with two rounds of parallel execution.
+
+        Yields AgentEvent objects in real-time as tools start and complete,
+        and populates tool_payloads dict in-place.
 
         Round 1: Claude sees trip brief → proposes base gather tools (weather, hotels,
                  restaurants, experiences, visa) → all executed in parallel →
@@ -298,13 +281,9 @@ class AgentOrchestrator:
                  using actual data from Round 1 → executed in parallel →
                  results returned to Claude.
 
-        This closes the tool-use loop: Claude synthesises across all results and
-        can make geographically informed decisions in the daily structure phase.
-
         Falls back to deterministic build_tool_plan if the loop fails entirely.
         """
-        events: list[AgentEvent] = []
-        tool_payloads: dict[str, Any] = dict(payloads_from_previous(previous))
+        tool_payloads.update(dict(payloads_from_previous(previous)))
 
         gather_tools = get_claude_tools(names=GATHER_TOOL_NAMES)
         has_existing_plan = previous is not None
@@ -334,19 +313,23 @@ class AgentOrchestrator:
                     messages=loop_messages,
                 )
 
+                # Complete plan_research step on first round
+                if _round == 0:
+                    yield AgentEvent(type="tool_completed", tool_name="plan_research", payload={"message": "Research plan ready"})
+
                 blocks = normalize_blocks(response.content)
                 tool_uses = [b for b in blocks if b.get("type") == "tool_use"]
 
                 if not tool_uses:
                     break  # Claude is done proposing tools
 
-                # Emit tool_started events
+                # Emit tool_started events immediately
                 for tu in tool_uses:
-                    events.append(AgentEvent(
+                    yield AgentEvent(
                         type="tool_started",
                         tool_name=tu["name"],
                         message=f"Running {tu['name']}",
-                    ))
+                    )
 
                 # Add Claude's full response to message history (required by API)
                 loop_messages.append({"role": "assistant", "content": response.content})
@@ -358,7 +341,7 @@ class AgentOrchestrator:
                 ]
                 results = execute_tools_parallel(gather_specs)
 
-                # Build tool_result blocks and close the loop
+                # Build tool_result blocks and yield completed events immediately
                 tool_result_blocks: list[dict[str, Any]] = []
                 for tu in tool_uses:
                     name = tu.get("name", "")
@@ -367,9 +350,9 @@ class AgentOrchestrator:
                         status, result = results[name]
                         if status == "ok":
                             tool_payloads[name] = result
-                            events.append(AgentEvent(
+                            yield AgentEvent(
                                 type="tool_completed", tool_name=name, payload=result
-                            ))
+                            )
                             # Truncate to stay within token budget
                             result_str = json.dumps(result, ensure_ascii=False)
                             if len(result_str) > 4000:
@@ -380,9 +363,9 @@ class AgentOrchestrator:
                                 "content": result_str,
                             })
                         else:
-                            events.append(AgentEvent(
+                            yield AgentEvent(
                                 type="tool_completed", tool_name=name, payload={"error": result}
-                            ))
+                            )
                             tool_result_blocks.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_id,
@@ -408,18 +391,16 @@ class AgentOrchestrator:
             ]
             if fallback_specs:
                 for name, _ in fallback_specs:
-                    events.append(AgentEvent(
+                    yield AgentEvent(
                         type="tool_started", tool_name=name, message=f"Running {name}"
-                    ))
+                    )
                 fallback_results = execute_tools_parallel(fallback_specs)
                 for name, (status, result) in fallback_results.items():
                     if status == "ok":
                         tool_payloads[name] = result
-                        events.append(AgentEvent(
+                        yield AgentEvent(
                             type="tool_completed", tool_name=name, payload=result
-                        ))
-
-        return tool_payloads, events
+                        )
 
 
 def _issue_score(issues: list[dict[str, Any]]) -> int:

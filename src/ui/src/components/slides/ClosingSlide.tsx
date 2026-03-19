@@ -72,7 +72,7 @@ export function ClosingSlide({ data }: Props) {
             >
               Cultural Notes
             </span>
-            {data.cultural_notes.map((note, i) => (
+            {data.cultural_notes.map((note) => (
               <p
                 key={note}
                 className="text-sm"

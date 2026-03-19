@@ -13,6 +13,7 @@ AgentEventType = Literal[
     "tool_started",
     "tool_completed",
     "final_response",
+    "workspace_ready",
 ]
 
 

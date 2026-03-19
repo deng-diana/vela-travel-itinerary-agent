@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
 import { motion } from 'motion/react'
+import { ArrowUp, ChevronLeft } from 'lucide-react'
 import type { ChatMessage } from '../types'
 import { MarkdownMessage } from './MarkdownMessage'
 import { ThinkingDots } from './ThinkingDots'
@@ -16,22 +17,27 @@ type LandingProps = {
 }
 
 const WELCOME_MESSAGE =
-  "Hi, I'm **Vela** — your travel planning companion.\n\nTell me where you'd like to go, how many days you have, and what matters most to you (food, culture, hidden gems, relaxation…), and I'll start building your itinerary right away."
+  "Hi, I'm **Vela** — your travel planning companion.\n\nShare your destination, dates, trip length, who's traveling, budget, and the kind of trip you want. I'll start building an itinerary that fits."
 
 export function Landing({ messages, input, isStreaming, liveNarration, error, onInputChange, onSubmit }: LandingProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Auto-scroll to bottom on every new message / narration
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, liveNarration, isStreaming])
 
-  const placeholder =
-    messages.length === 0
-      ? 'e.g. "3 days in Paris, solo, love food and art, mid budget"'
-      : 'Add more details or answer the question above…'
+  // Always keep textarea focused so cursor is visible
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      textareaRef.current?.focus()
+    }, 400) // wait for entrance animation
+    return () => clearTimeout(timer)
+  }, [])
 
   const showThinking = isStreaming && !liveNarration
+  const isInitial = messages.length === 0 && !liveNarration && !isStreaming
 
   return (
     <motion.section
@@ -40,100 +46,224 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -18 }}
       transition={{ duration: 0.35, ease: 'easeOut' }}
-      className="mx-auto flex min-h-screen max-w-6xl items-center justify-center px-5 py-10"
+      className="flex min-h-screen w-full flex-col items-center px-6"
+      style={{ background: 'var(--bg-dark)', position: 'relative' }}
     >
-      <div className="w-full max-w-4xl rounded-[40px] border border-white/10 bg-[linear-gradient(180deg,rgba(16,27,43,0.9),rgba(8,16,27,0.92))] p-8 shadow-[0_30px_120px_rgba(3,8,16,0.45)] lg:p-12">
-        <div className="mx-auto max-w-3xl text-center">
-          <h1 className="text-6xl font-semibold tracking-[-0.07em] text-white lg:text-8xl">Vela</h1>
-          <p className="mx-auto mt-6 max-w-2xl text-xl leading-9 text-slate-300 lg:text-2xl">
-            A warmer way to turn a travel idea into a trip that feels thoughtful, useful, and deeply your own.
-          </p>
-        </div>
+      {/* Back button — shown when conversation has started */}
+      {messages.length > 0 && (
+        <button
+          onClick={() => window.location.reload()}
+          className="absolute top-6 left-6 p-2 transition-opacity hover:opacity-70"
+          style={{ color: 'var(--color-text-muted)' }}
+          title="Return to home"
+        >
+          <ChevronLeft size={24} />
+        </button>
+      )}
 
-        <div className="mx-auto mt-10 flex min-h-[620px] max-w-3xl flex-col rounded-[32px] border border-white/10 bg-slate-950/70">
-          {/* Messages area — newest always at bottom */}
-          <div className="flex-1 overflow-auto px-5 py-5 lg:px-6 lg:py-6">
-            <div className="flex flex-col gap-3">
+      {/* Vertical centering wrapper — centers the content group on the page */}
+      <div
+        className="w-full max-w-2xl flex flex-col"
+        style={{
+          flex: isInitial ? '1 1 auto' : '0 0 auto',
+          justifyContent: isInitial ? 'center' : 'flex-start',
+          paddingTop: isInitial ? '0' : '80px',
+        }}
+      >
+        {/* Header: Logo + Title + Description (only show when no messages) */}
+        {isInitial && (
+          <motion.div
+            className="w-full text-center"
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+          >
+            {/* Logo */}
+            <div className="flex justify-center" style={{ marginBottom: '16px' }}>
+              <img src="/logo.svg" alt="Vela" width={96} height={96} style={{ display: 'block' }} />
+            </div>
 
-              {/* Welcome message — only when no conversation yet */}
-              {messages.length === 0 && !liveNarration && !isStreaming && (
-                <article className="mr-6 rounded-[22px] border border-slate-700 bg-slate-950 px-4 py-4 text-sm leading-7 text-slate-200">
-                  <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">Vela</div>
-                  <MarkdownMessage text={WELCOME_MESSAGE} />
-                </article>
-              )}
+            {/* Title: 32px */}
+            <h1
+              style={{
+                fontFamily: 'var(--font-editorial)',
+                color: 'var(--color-text)',
+                fontSize: '32px',
+                fontWeight: 600,
+                lineHeight: '1.2',
+                marginBottom: '16px',
+              }}
+            >
+              Vela Travel Planner
+            </h1>
 
-              {/* All committed messages in chronological order */}
-              {messages.map((message, index) => (
-                <article
-                  key={`landing-${message.role}-${index}`}
-                  className={`rounded-[22px] px-4 py-4 text-sm leading-7 ${
-                    message.role === 'user'
-                      ? 'ml-6 bg-emerald-500/18 text-emerald-50'
-                      : 'mr-6 border border-slate-700 bg-slate-950 text-slate-200'
-                  }`}
-                >
-                  <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">
-                    {message.role === 'user' ? 'You' : 'Vela'}
-                  </div>
-                  {message.role === 'assistant' ? (
-                    <MarkdownMessage text={message.text} />
-                  ) : (
-                    <div className="whitespace-pre-line">{message.text}</div>
-                  )}
-                </article>
-              ))}
+            {/* Description: 16px, single line */}
+            <p
+              style={{
+                fontFamily: 'var(--font-editorial)',
+                color: 'var(--color-text-muted)',
+                fontSize: '16px',
+                lineHeight: '1.5',
+                margin: 0,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
+              A warmer way to turn travel ideas into journeys planned with care.
+            </p>
+          </motion.div>
+        )}
 
-              {/* Live narration — always at the bottom */}
-              {liveNarration && (
-                <div className="mr-6 rounded-[20px] border border-slate-700 bg-slate-950 px-4 py-4 text-sm leading-7 text-slate-200">
-                  <div className="mb-2 text-[11px] uppercase tracking-[0.24em] text-slate-400">Vela</div>
+        {/* Onboarding message — 48px below description */}
+        {isInitial && (
+          <article
+            className="rounded-lg flex gap-3"
+            style={{
+              border: '1px solid var(--color-border)',
+              color: 'var(--color-text)',
+              padding: '20px',
+              marginTop: '48px',
+            }}
+          >
+            <div className="flex-shrink-0 mt-0.5">
+              <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <MarkdownMessage text={WELCOME_MESSAGE} />
+            </div>
+          </article>
+        )}
+
+        {/* Conversation messages */}
+        {messages.length > 0 && (
+          <div className="flex flex-col gap-6">
+            {messages.map((message, index) => (
+              <article
+                key={`landing-${message.role}-${index}`}
+                className={`rounded-lg text-sm leading-7 ${
+                  message.role === 'user'
+                    ? 'ml-6'
+                    : 'mr-6 flex gap-3'
+                }`}
+                style={
+                  message.role === 'user'
+                    ? {
+                        background: 'var(--bg-user)',
+                        color: 'var(--color-text)',
+                        padding: '16px',
+                      }
+                    : {
+                        border: '1px solid var(--color-border)',
+                        color: 'var(--color-text)',
+                        padding: '20px',
+                      }
+                }
+              >
+                {message.role === 'user' ? (
+                  <div className="whitespace-pre-line">{message.text}</div>
+                ) : (
+                  <>
+                    <div className="flex-shrink-0 mt-0.5">
+                      <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <MarkdownMessage text={message.text} />
+                    </div>
+                  </>
+                )}
+              </article>
+            ))}
+
+            {/* Live narration */}
+            {liveNarration && (
+              <div
+                className="rounded-lg flex gap-3"
+                style={{
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text)',
+                  padding: '20px',
+                }}
+              >
+                <div className="flex-shrink-0 mt-0.5">
+                  <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
+                </div>
+                <div className="flex-1 min-w-0">
                   {liveNarration}
                 </div>
-              )}
-
-              {showThinking && <ThinkingDots />}
-
-              {error && (
-                <div className="rounded-2xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                  {error}
-                </div>
-              )}
-
-              {/* Scroll anchor */}
-              <div ref={bottomRef} />
-            </div>
-          </div>
-
-          {/* Input */}
-          <div className="border-t border-white/10 px-5 py-5 lg:px-6 lg:py-6">
-            <form onSubmit={onSubmit}>
-              <div className="relative">
-                <textarea
-                  className="min-h-28 w-full rounded-[24px] border border-slate-800 bg-slate-950 px-5 py-4 pr-16 text-base text-slate-100 outline-none resize-none"
-                  value={input}
-                  onChange={(event) => onInputChange(event.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      e.currentTarget.form?.requestSubmit()
-                    }
-                  }}
-                  placeholder={placeholder}
-                />
-                <button
-                  className="absolute bottom-3 right-3 flex h-10 w-10 items-center justify-center rounded-full bg-emerald-400 text-slate-950 transition-colors disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
-                  disabled={isStreaming || !input.trim()}
-                  type="submit"
-                  aria-label="Send"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
-                    <path d="M3.105 2.288a.75.75 0 0 0-.826.95l1.414 4.926A1.5 1.5 0 0 0 5.135 9.25h6.115a.75.75 0 0 1 0 1.5H5.135a1.5 1.5 0 0 0-1.442 1.086l-1.414 4.926a.75.75 0 0 0 .826.95l14.095-5.637a.75.75 0 0 0 0-1.4L3.105 2.288Z" />
-                  </svg>
-                </button>
               </div>
-            </form>
+            )}
+
+            {showThinking && <ThinkingDots />}
+
+            {error && (
+              <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                {error}
+              </div>
+            )}
+
+            {/* Scroll anchor */}
+            <div ref={bottomRef} />
           </div>
+        )}
+
+        {/* Input — 48px below onboarding/messages */}
+        <div style={{ marginTop: '48px', paddingBottom: '48px' }}>
+          <form onSubmit={onSubmit}>
+            <div
+              className="relative flex items-center rounded-lg"
+              style={{
+                background: 'var(--bg-input)',
+                border: '1px solid var(--color-border)',
+                padding: '24px',
+              }}
+            >
+              {/* Custom thick blinking caret — visible when input is empty */}
+              {!input && <div className="custom-caret" />}
+              <textarea
+                ref={textareaRef}
+                className="flex-1 outline-none resize-none bg-transparent"
+                style={{
+                  color: 'var(--color-text)',
+                  fontFamily: 'var(--font-editorial)',
+                  fontSize: '1rem',
+                  minHeight: '24px',
+                  caretColor: input ? 'var(--color-accent)' : 'transparent',
+                }}
+                value={input}
+                onChange={(event) => onInputChange(event.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    e.currentTarget.form?.requestSubmit()
+                  }
+                }}
+                onBlur={() => {
+                  // Re-focus after blur to keep cursor always visible
+                  if (isInitial) {
+                    setTimeout(() => textareaRef.current?.focus(), 0)
+                  }
+                }}
+                placeholder={'"3 days in Paris, solo, love food and art, mid-range budget"'}
+                rows={1}
+              />
+              <button
+                className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80"
+                style={{
+                  background: 'var(--color-accent)',
+                  color: '#000000',
+                  opacity: isStreaming ? 0.5 : 1,
+                  cursor: isStreaming ? 'not-allowed' : 'pointer',
+                }}
+                disabled={isStreaming}
+                type="submit"
+                aria-label="Send"
+                title="Send message"
+              >
+                <ArrowUp size={18} strokeWidth={2.5} />
+              </button>
+            </div>
+          </form>
         </div>
       </div>
     </motion.section>

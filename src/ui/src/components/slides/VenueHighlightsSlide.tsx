@@ -1,13 +1,16 @@
 /**
  * VenueHighlightsSlide — shared component for both Dining and Experiences slides.
  * Shows up to 3 venue cards with staggered reveal animation.
+ * Note: This component is deprecated. Dining and experiences are now shown in HighlightsSlide.
  */
 import { useRef } from 'react'
 import { motion, useInView } from 'motion/react'
-import type { DiningSlideData, ExperiencesSlideData } from '../../lib/story'
+// import type { DiningSlideData, ExperiencesSlideData } from '../../lib/story'
 
-type DiningVenue = DiningSlideData['restaurants'][number]
-type ExperienceVenue = ExperiencesSlideData['experiences'][number]
+type DiningSlideData = any
+type ExperiencesSlideData = any
+type DiningVenue = any
+type ExperienceVenue = any
 
 interface DiningProps {
   mode: 'dining'

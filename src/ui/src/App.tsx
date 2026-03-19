@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import type { FormEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type {
@@ -18,11 +18,8 @@ import type {
 import { API_BASE_URL, buildPhotoUrl } from './types'
 import { Landing } from './components/Landing'
 import { ChatPanel } from './components/ChatPanel'
-import { ItineraryPanel } from './components/ItineraryPanel'
 import { StoryPlayer } from './components/StoryPlayer'
 import { buildStory } from './lib/story'
-
-type ViewMode = 'canvas' | 'story'
 
 const BLANK_ITINERARY: ItineraryDraft = {
   destination: '',
@@ -46,9 +43,7 @@ function App() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [workspaceMode, setWorkspaceMode] = useState(false)
-  const [viewMode, setViewMode] = useState<ViewMode>('canvas')
-  const [userLockedMode, setUserLockedMode] = useState(false)
-  const hasAutoSwitchedRef = useRef(false)
+  const resetToTop = 0
 
   // Public story page: ?trip=<slug>
   const [publicSlug] = useState<string | null>(() => {
@@ -78,30 +73,11 @@ function App() {
       })
   }, [publicSlug])
 
-  // Auto-switch to Story Mode after itinerary is complete
-  useEffect(() => {
-    if (
-      itinerary?.days && itinerary.days.length > 0 &&
-      !isStreaming &&
-      !hasAutoSwitchedRef.current &&
-      !userLockedMode
-    ) {
-      setViewMode('story')
-      hasAutoSwitchedRef.current = true
-    }
-  }, [itinerary?.days?.length, isStreaming, userLockedMode])
-
-  // Reset auto-switch flag when user starts a new trip conversation
-  function resetTrip() {
-    hasAutoSwitchedRef.current = false
-    setUserLockedMode(false)
-    setViewMode('canvas')
-  }
-
-  function handleToggleView(mode: ViewMode) {
-    setViewMode(mode)
-    setUserLockedMode(true)
-  }
+  // Build slides incrementally from current itinerary state
+  const slides = useMemo(
+    () => buildStory(itinerary, buildPhotoUrl),
+    [itinerary],
+  )
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -114,9 +90,6 @@ function App() {
     setMessages((current) => [...current, { role: 'user', text: trimmed }])
     setSteps([])
     setLiveNarration('')
-
-    // Reset auto-switch on new conversation turn
-    if (!itinerary) resetTrip()
 
     try {
       const response = await fetch(`${API_BASE_URL}/chat/stream`, {
@@ -164,6 +137,24 @@ function App() {
 
     if (streamEvent.type === 'assistant_message' && streamEvent.message) {
       setLiveNarration(streamEvent.message)
+      return
+    }
+
+    // Immediate workspace transition when backend signals readiness
+    if (streamEvent.type === 'workspace_ready') {
+      setWorkspaceMode(true)
+      const payload = streamEvent.payload as { planning_brief?: { destination?: string; dates_or_month?: string; trip_length_days?: number; priorities?: string[]; travel_party?: string } } | undefined
+      if (payload?.planning_brief) {
+        const brief = payload.planning_brief
+        setItinerary((current) => ({
+          ...(current ?? { ...BLANK_ITINERARY }),
+          destination: brief.destination ?? '',
+          month: brief.dates_or_month ?? '',
+          trip_length_days: brief.trip_length_days ?? 0,
+          interests: brief.priorities ?? [],
+          travel_party: brief.travel_party ?? null,
+        }))
+      }
       return
     }
 
@@ -239,7 +230,7 @@ function App() {
     }
   }
 
-  // Public story page
+  // Public story page — standalone full-screen
   if (publicSlug) {
     if (publicLoading) {
       return (
@@ -247,7 +238,7 @@ function App() {
           className="min-h-screen flex items-center justify-center"
           style={{ background: 'var(--story-bg)', color: 'var(--story-text-muted)', fontFamily: 'var(--font-data)' }}
         >
-          Loading trip…
+          Loading trip...
         </div>
       )
     }
@@ -262,11 +253,11 @@ function App() {
       )
     }
     const publicSlides = buildStory(publicItinerary, buildPhotoUrl)
-    return <StoryPlayer slides={publicSlides} />
+    return <StoryPlayer slides={publicSlides} fullScreen />
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
+    <main className="min-h-screen" style={{ background: 'var(--story-bg)' }}>
       <AnimatePresence mode="wait">
         {!workspaceMode ? (
           <Landing
@@ -278,32 +269,6 @@ function App() {
             onInputChange={setInput}
             onSubmit={handleSubmit}
           />
-        ) : viewMode === 'story' && itinerary?.days && itinerary.days.length > 0 ? (
-          <motion.div
-            key="story"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.4 }}
-            className="fixed inset-0 z-40"
-          >
-            {/* Back to workspace button */}
-            <button
-              onClick={() => handleToggleView('canvas')}
-              className="fixed top-4 left-4 z-50 flex items-center gap-2 rounded-full px-4 py-2 text-xs transition-opacity hover:opacity-80"
-              style={{
-                background: 'rgba(10,10,10,0.8)',
-                border: '1px solid var(--story-border)',
-                color: 'var(--story-text-muted)',
-                fontFamily: 'var(--font-data)',
-                letterSpacing: '0.05em',
-                backdropFilter: 'blur(8px)',
-              }}
-            >
-              ← Canvas
-            </button>
-            <StoryPlayer slides={buildStory(itinerary, buildPhotoUrl)} />
-          </motion.div>
         ) : (
           <motion.section
             key="workspace"
@@ -311,8 +276,9 @@ function App() {
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.35, ease: 'easeOut' }}
-            className="mx-auto grid min-h-screen max-w-[1600px] gap-4 p-4 lg:grid-cols-[380px_minmax(0,1fr)]"
+            className="h-screen grid grid-cols-1 lg:grid-cols-[480px_minmax(0,1fr)]"
           >
+            {/* Left: Chat */}
             <ChatPanel
               sessionId={sessionId}
               messages={messages}
@@ -324,15 +290,18 @@ function App() {
               onInputChange={setInput}
               onSubmit={handleSubmit}
             />
-            <ItineraryPanel
-              itinerary={itinerary}
-              viewMode={viewMode}
-              onToggleView={handleToggleView}
-              canSwitchToStory={!!(itinerary?.days && itinerary.days.length > 0 && !isStreaming)}
-              isStreaming={isStreaming}
-              liveNarration={liveNarration}
-              steps={steps}
-            />
+
+            {/* Right: Story Player — always visible, progressively populated */}
+            <div className="hidden lg:block h-screen overflow-hidden">
+              <StoryPlayer
+                slides={slides}
+                isStreaming={isStreaming}
+                steps={steps}
+                liveNarration={liveNarration}
+                itinerary={itinerary}
+                resetToTop={resetToTop}
+              />
+            </div>
           </motion.section>
         )}
       </AnimatePresence>
@@ -346,6 +315,8 @@ function App() {
 
 function makeActiveStep(toolName: string): AgentStep {
   const detailByTool: Record<string, string> = {
+    analyze_preferences: 'Reading your preferences and planning the research strategy.',
+    plan_research: 'Deciding which research tools to run for this trip.',
     get_weather: 'Checking live destination weather and turning it into practical travel context.',
     get_hotels: 'Screening stay options that fit the trip style, neighborhood, and budget.',
     get_restaurants: 'Curating dining options that match the traveler profile and local rhythm.',
@@ -354,6 +325,9 @@ function makeActiveStep(toolName: string): AgentStep {
     estimate_budget: 'Calculating a realistic budget breakdown for the trip.',
     get_visa_requirements: 'Looking up entry requirements and visa details.',
     get_packing_suggestions: 'Building a smart packing list based on weather and activities.',
+    verify_itinerary: 'Running quality checks — ensuring every day is complete and coherent.',
+    polish_copy: 'Rewriting descriptions for warmth, clarity, and a sense of place.',
+    write_summary: 'Crafting your final trip summary and travel tips.',
   }
 
   return {
@@ -366,14 +340,19 @@ function makeActiveStep(toolName: string): AgentStep {
 
 function makeCompletedStep(toolName: string): AgentStep {
   const completedByTool: Record<string, string> = {
+    analyze_preferences: 'Preferences analyzed — research plan ready.',
+    plan_research: 'Research strategy selected.',
     get_weather: 'Live weather is now grounding the plan.',
-    get_hotels: 'Stay options have been added to the itinerary canvas.',
+    get_hotels: 'Stay options have been added to the itinerary.',
     get_restaurants: 'Dining options are now part of the plan.',
     get_experiences: 'Experience options are ready and mapped into the trip.',
     get_daily_structure: 'The itinerary has been organized into labeled days.',
     estimate_budget: 'Budget breakdown is ready.',
     get_visa_requirements: 'Entry requirements have been looked up.',
     get_packing_suggestions: 'Packing list is ready.',
+    verify_itinerary: 'Quality verified — the plan is solid.',
+    polish_copy: 'Every description has been polished.',
+    write_summary: 'Summary and travel tips are ready.',
   }
 
   return {
@@ -386,14 +365,19 @@ function makeCompletedStep(toolName: string): AgentStep {
 
 function prettyToolName(toolName: string): string {
   const names: Record<string, string> = {
-    get_weather: 'Checking weather',
-    get_hotels: 'Finding stays',
-    get_restaurants: 'Curating dining',
-    get_experiences: 'Finding experiences',
-    get_daily_structure: 'Building the itinerary',
-    estimate_budget: 'Estimating budget',
-    get_visa_requirements: 'Checking visa requirements',
-    get_packing_suggestions: 'Building packing list',
+    analyze_preferences: 'Analyzing trip preferences',
+    plan_research: 'plan_research — selecting tools to run',
+    get_weather: 'get_weather — fetching live conditions',
+    get_hotels: 'get_hotels — screening accommodation',
+    get_restaurants: 'get_restaurants — curating dining options',
+    get_experiences: 'get_experiences — collecting activities',
+    get_daily_structure: 'get_daily_structure — building day-by-day plan',
+    estimate_budget: 'estimate_budget — calculating costs',
+    get_visa_requirements: 'get_visa_requirements — checking entry rules',
+    get_packing_suggestions: 'get_packing_suggestions — building list',
+    verify_itinerary: 'verify_itinerary — quality check',
+    polish_copy: 'polish_copy — rewriting descriptions',
+    write_summary: 'write_summary — composing final reply',
   }
   return names[toolName] ?? toolName
 }

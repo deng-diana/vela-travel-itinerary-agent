@@ -10,31 +10,62 @@
   overflow: hidden;
 }
 
-:root {
-  --story-bg: #0A0A0A;
-  --story-text: #F5F0E8;
-  --story-text-muted: rgba(245, 240, 232, 0.55);
-  --story-accent: #C4715C;
-  --story-accent2: #2A7F6F;
-  --story-border: rgba(245, 240, 232, 0.12);
-  --story-overlay: rgba(10, 10, 10, 0.62);
-  --font-editorial: 'Cormorant Garamond', Georgia, serif;
-  --font-data: 'JetBrains Mono', 'Fira Code', monospace;
+/* ── Placeholder styling ─────────────────────────────────────── */
+textarea::placeholder,
+input::placeholder {
+  color: rgba(255, 255, 255, 0.3);
 }
 
+/* ── Custom thick caret ──────────────────────────────────────── */
+@keyframes caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.custom-caret {
+  width: 3px;
+  height: 1.2em;
+  background: var(--color-accent);
+  border-radius: 1px;
+  animation: caret-blink 1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+/* ── Brand Color Palette ──────────────────────────────────────── */
 :root {
-  --bg: #071019;
-  --panel: rgba(10, 18, 30, 0.88);
-  --card-strong: rgba(20, 31, 48, 0.78);
-  --card-soft: rgba(14, 24, 38, 0.78);
+  /* Background & Surfaces */
+  --bg-dark: #101603;
+  --bg-user: #090D01;
+  --bg-input: #151F03;
+  --bg-card: rgba(245, 240, 232, 0.03);
 
-  --text-primary: #f3f7fb;
-  --text-secondary: #b6c2cf;
-  --text-muted: #7f91a5;
+  /* Primary Colors */
+  --color-accent: #C4FF4D;
+  --color-accent-secondary: #2A7F6F;
+  --color-text: #FFFFFF;
+  --color-text-muted: rgba(255, 255, 255, 0.6);
+  --color-border: rgba(255, 255, 255, 0.1);
 
-  --accent: #7bd3c2;
-  --accent-warm: #f4b261;
-  --bubble-user: linear-gradient(135deg, #1b4d63 0%, #0f7c82 100%);
+  /* Story Mode Design Tokens (Brand Aligned) */
+  --story-bg: #101603;
+  --story-text: #FFFFFF;
+  --story-text-muted: rgba(255, 255, 255, 0.6);
+  --story-accent: #C4FF4D;
+  --story-accent2: #2A7F6F;
+  --story-border: rgba(255, 255, 255, 0.1);
+  --story-overlay: rgba(16, 22, 3, 0.8);
+
+  /* Typography */
+  --font-editorial: 'Lora', Georgia, serif;
+  --font-data: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* Spacing & Border Radius */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  /* Transitions */
+  --transition-fast: 0.2s ease-out;
+  --transition-smooth: 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -42,24 +73,16 @@
 }
 
 html {
-  background:
-    radial-gradient(circle at top left, rgba(123, 211, 194, 0.1), transparent 25%),
-    radial-gradient(circle at top right, rgba(244, 178, 97, 0.12), transparent 22%),
-    linear-gradient(180deg, #030913 0%, #071019 100%);
+  background: var(--bg-dark);
   min-height: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  font-family:
-    "Lora",
-    Georgia,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    serif;
+  background: var(--bg-dark);
+  color: var(--color-text);
+  font-family: var(--font-editorial);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -122,6 +145,22 @@ article {
   animation: shimmer-sweep 1.8s linear infinite;
 }
 
+/* Step card shimmer — subtle warm sweep for active agent steps */
+.step-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.step-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent 0%, rgba(196, 113, 92, 0.12) 50%, transparent 100%);
+  animation: shimmer-sweep 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
 .agent-shimmer-text {
   background: linear-gradient(90deg, #dce7f7 0%, #ffffff 45%, #9fb6d9 100%);
   background-size: 220% 100%;
@@ -146,9 +185,46 @@ article {
   }
 }
 
+/* Active step sweep/shimmer effect */
+@keyframes active-step-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.active-step-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-text) 0%,
+    var(--color-text) 35%,
+    var(--color-accent) 50%,
+    var(--color-text) 65%,
+    var(--color-text) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: active-step-sweep 2.5s linear infinite;
+}
+
 /* Thinking dots bounce animation */
 .thinking-dot {
   animation: thinking-bounce 1.2s ease-in-out infinite;
+}
+
+@keyframes shimmer-progress {
+  0% {
+    opacity: 0.6;
+    width: 30%;
+  }
+  50% {
+    opacity: 1;
+    width: 60%;
+  }
+  100% {
+    opacity: 0.6;
+    width: 30%;
+  }
 }
 
 @keyframes thinking-bounce {

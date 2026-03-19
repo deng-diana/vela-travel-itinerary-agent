@@ -215,19 +215,12 @@ def build_clarifying_reply(
 def build_landing_followup_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
     """Ask for the bare minimum needed to start — destination and/or trip length only."""
     joined = _join_field_labels(missing, user_message)
-    if _looks_like_chinese(user_message):
-        return f"告诉我{joined}，我马上开始规划！"
     return f"Just tell me {joined} and I'll start building your itinerary right away!"
 
 
 def build_workspace_handoff_reply(_brief: PlanningBrief, missing: list[str], user_message: str) -> str:
     """Move the conversation into the workspace without staying stuck in landing."""
     joined = _join_field_labels(missing, user_message)
-    if _looks_like_chinese(user_message):
-        return (
-            f"我先把工作区打开继续往下推进，不过在我真正排出路线前，还需要你补一下：{joined}。"
-            "你直接在左边继续回我，我一拿到这些信息就接着更新。"
-        )
     return (
         f"I've opened the workspace so we can keep moving, but I still need {joined} "
         "before I can build a real itinerary. Reply here on the left and I'll update it as soon as I have that."
@@ -315,29 +308,21 @@ def _join_field_labels(fields: list[str], user_message: str) -> str:
         return "a couple more trip details"
     if len(labels) == 1:
         return labels[0]
-    if _looks_like_chinese(user_message):
-        return "、".join(labels[:-1]) + f"和{labels[-1]}"
     if len(labels) == 2:
         return " and ".join(labels)
     return ", ".join(labels[:-1]) + f", and {labels[-1]}"
 
 
 def _field_label(field: str, user_message: str) -> str:
-    chinese = _looks_like_chinese(user_message)
     labels = {
-        "destination": ("想去哪里", "where you'd like to go"),
-        "trip_length_days": ("玩几天", "how many days you have"),
-        "dates_or_month": ("大概什么时候或几月", "rough dates or month"),
-        "travel_party": ("几个人一起去", "who's traveling"),
-        "budget": ("预算大概什么范围", "your budget range"),
-        "priorities": ("这趟最看重什么", "what matters most on this trip"),
+        "destination": "where you'd like to go",
+        "trip_length_days": "how many days you have",
+        "dates_or_month": "rough dates or month",
+        "travel_party": "who's traveling",
+        "budget": "your budget range",
+        "priorities": "what matters most on this trip",
     }
-    zh_label, en_label = labels.get(field, ("补充偏好", "a missing trip detail"))
-    return zh_label if chinese else en_label
-
-
-def _looks_like_chinese(user_message: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in user_message)
+    return labels.get(field, "a missing trip detail")
 
 
 def _default_dates_or_month() -> str:

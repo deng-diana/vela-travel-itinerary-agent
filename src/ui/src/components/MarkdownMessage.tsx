@@ -7,7 +7,7 @@ export function MarkdownMessage({ text }: { text: string }) {
     .filter(Boolean)
 
   return (
-    <div className="space-y-3 text-sm leading-7">
+    <div className="space-y-2 text-sm leading-7">
       {blocks.map((block, index) => {
         const lines = block
           .split('\n')
@@ -56,15 +56,48 @@ export function MarkdownMessage({ text }: { text: string }) {
 }
 
 function renderInlineMarkdown(text: string) {
-  const parts = text.split(/(\*\*.*?\*\*)/g).filter(Boolean)
+  // Split by both bold markers (**text**) and markdown links ([text](url))
+  const boldAndLinkPattern = /(\*\*.*?\*\*|\[.*?\]\(.*?\))/g
+  const parts = text.split(boldAndLinkPattern).filter(Boolean)
 
   return parts.map((part, index) => {
+    // Handle bold text
     if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
       return (
         <strong key={`strong-${index}`} className="font-semibold text-white">
           {part.slice(2, -2)}
         </strong>
       )
+    }
+    // Handle markdown links [text](url)
+    if (part.startsWith('[') && part.includes('](')) {
+      const linkMatch = part.match(/\[(.*?)\]\((.*?)\)/)
+      if (linkMatch) {
+        const [, linkText, url] = linkMatch
+        const handleClick = (e: React.MouseEvent) => {
+          e.preventDefault()
+          if (url === '#scroll-to-top') {
+            // Scroll the messages area to top
+            const messagesArea = document.querySelector('.messages-area')
+            if (messagesArea) {
+              messagesArea.scrollTo({ top: 0, behavior: 'smooth' })
+            }
+          } else {
+            window.location.href = url
+          }
+        }
+        return (
+          <a
+            key={`link-${index}`}
+            onClick={handleClick}
+            href={url}
+            className="cursor-pointer transition-opacity hover:opacity-80"
+            style={{ color: 'var(--color-accent)', textDecoration: 'underline' }}
+          >
+            {linkText}
+          </a>
+        )
+      }
     }
     return <InlineText key={`text-${index}`}>{part}</InlineText>
   })
