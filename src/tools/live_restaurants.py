@@ -135,7 +135,7 @@ def map_place_to_restaurant(place: dict, input_data: RestaurantSearchInput) -> R
         cuisine=cuisine,
         price_range=price_range,
         neighborhood=neighborhood,
-        must_order_dish=None,
+        must_order_dish=suggest_signature_dish(cuisine, display_name, input_data.destination),
         reservation_link=maps_url,
         why_it_fits=build_why_it_fits(input_data, neighborhood, cuisine),
         rating=place.get("rating"),
@@ -167,6 +167,80 @@ def map_price_level(price_level: str | None) -> str:
         "PRICE_LEVEL_VERY_EXPENSIVE": "$$$$",
     }
     return mapping.get(price_level, "$$")
+
+
+def suggest_signature_dish(cuisine: str, restaurant_name: str, destination: str) -> str:
+    """Heuristic signature dish suggestion based on cuisine type and destination.
+
+    Since Google Places API doesn't return menu data, we use cuisine + destination
+    to suggest a realistic signature dish that adds specificity to the recommendation.
+    """
+    cuisine_lower = cuisine.lower()
+    dest_lower = destination.lower()
+
+    # Destination-specific regional dishes
+    regional_dishes: dict[str, list[str]] = {
+        "tokyo": ["Omakase sushi selection", "Tonkotsu ramen with chashu", "Tempura course with seasonal vegetables",
+                   "Wagyu beef don", "Matcha parfait", "Yakitori tasting set"],
+        "kyoto": ["Kaiseki multi-course meal", "Yudofu (hot tofu)", "Matcha soba noodles",
+                   "Obanzai home-style platter", "Sakura mochi"],
+        "osaka": ["Takoyaki platter", "Okonomiyaki with pork belly", "Kushikatsu assortment",
+                   "Kitsune udon", "Negiyaki scallion pancake"],
+        "paris": ["Duck confit with pommes sarladaises", "Steak tartare", "Croque monsieur",
+                   "Bouillabaisse", "Tarte tatin", "Soufflé au chocolat"],
+        "london": ["Sunday roast with Yorkshire pudding", "Fish and chips with mushy peas",
+                    "Beef Wellington", "Sticky toffee pudding", "Full English breakfast"],
+        "rome": ["Cacio e pepe", "Carbonara with guanciale", "Supplì al telefono",
+                  "Saltimbocca alla romana", "Tiramisu"],
+        "barcelona": ["Paella valenciana", "Patatas bravas", "Jamón ibérico with pan con tomate",
+                       "Fideuà", "Crema catalana"],
+        "bangkok": ["Pad Thai with river prawns", "Green curry with roti", "Tom yum goong",
+                     "Mango sticky rice", "Som tum (papaya salad)"],
+        "singapore": ["Hainanese chicken rice", "Chilli crab", "Laksa",
+                       "Char kway teow", "Kaya toast set"],
+        "istanbul": ["Kebab platter with hummus", "Lahmacun", "Baklava assortment",
+                      "Pide with sucuk", "Turkish breakfast spread"],
+        "seoul": ["Korean BBQ galbi set", "Bibimbap in hot stone pot", "Kimchi jjigae",
+                   "Tteokbokki", "Samgyeopsal set"],
+        "bali": ["Nasi goreng with fried egg", "Babi guling (suckling pig)", "Satay lilit",
+                  "Lawar salad", "Bebek betutu (slow-cooked duck)"],
+    }
+
+    # Check destination-specific dishes first
+    for city, dishes in regional_dishes.items():
+        if city in dest_lower:
+            import random
+            return random.choice(dishes)
+
+    # Cuisine-type fallback
+    cuisine_dishes: dict[str, list[str]] = {
+        "japanese": ["Chef's omakase selection", "Seasonal sashimi platter"],
+        "sushi": ["Chef's omakase selection", "Seasonal nigiri set"],
+        "ramen": ["House special tonkotsu ramen", "Spicy miso ramen with chashu"],
+        "italian": ["Handmade pasta of the day", "Wood-fired margherita pizza"],
+        "french": ["Duck confit with seasonal vegetables", "Bouillabaisse"],
+        "chinese": ["Peking duck", "Xiao long bao (soup dumplings)"],
+        "thai": ["Green curry with jasmine rice", "Pad Thai with prawns"],
+        "indian": ["Butter chicken with garlic naan", "Thali platter"],
+        "mexican": ["Tacos al pastor", "Mole negro with chicken"],
+        "korean": ["Korean BBQ set", "Bibimbap in hot stone pot"],
+        "vietnamese": ["Pho bo (beef noodle soup)", "Banh mi with lemongrass chicken"],
+        "mediterranean": ["Grilled seafood platter", "Mezze sharing board"],
+        "seafood": ["Grilled catch of the day", "Seafood platter for two"],
+        "steakhouse": ["Dry-aged ribeye steak", "Wagyu tasting cut"],
+        "café": ["Signature coffee with house pastry", "Seasonal brunch plate"],
+        "bakery": ["House sourdough with seasonal preserves", "Pain au chocolat"],
+        "bar": ["Signature cocktail with bar snacks", "Craft beer tasting flight"],
+        "pizza": ["Wood-fired margherita with buffalo mozzarella", "Truffle pizza"],
+    }
+
+    for keyword, dishes in cuisine_dishes.items():
+        if keyword in cuisine_lower:
+            import random
+            return random.choice(dishes)
+
+    # Generic fallback
+    return "Chef's signature dish"
 
 
 def build_why_it_fits(input_data: RestaurantSearchInput, neighborhood: str, cuisine: str) -> str:

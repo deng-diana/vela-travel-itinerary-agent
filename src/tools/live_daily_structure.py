@@ -55,7 +55,7 @@ def _build_arrival_day(
     pace: str,
 ) -> DayPlan:
     dinner = _pick_next(restaurants, restaurant_uses)
-    evening_anchor = _pick_next(experiences, experience_uses) if pace == "packed" else None
+    evening_anchor = _pick_next(experiences, experience_uses) if pace in {"balanced", "packed"} else None
 
     items = [
         DayItem(

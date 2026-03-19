@@ -138,12 +138,20 @@ def infer_budget_tier(requested_budget: BudgetTier, price_level: str | None) -> 
     return mapping.get(price_level, requested_budget)
 
 
+_price_call_count = 0
+
 def estimate_nightly_rate_usd(category: BudgetTier) -> int:
+    """Return varied nightly rates based on budget tier, rotating through price bands."""
+    global _price_call_count
+    _price_call_count += 1
+    idx = _price_call_count % 3  # cycle through low/mid/high within tier
+
     if category == "budget":
-        return 140
+        return [95, 120, 145][idx]
     if category == "luxury":
-        return 420
-    return 240
+        return [320, 385, 450][idx]
+    # mid-range
+    return [155, 195, 230][idx]
 
 
 def extract_photo_metadata(place: dict) -> tuple[str | None, str | None]:

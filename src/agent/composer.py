@@ -48,7 +48,9 @@ def build_daily_structure_input(
     ranked_experiences = context["ranked_experiences"]
 
     restaurant_names = [r.name for r in ranked_restaurants[: max((brief.trip_length_days or 1) + 2, 5)]]
-    experience_names = [e.name for e in ranked_experiences[: max(brief.trip_length_days or 1, 4)]]
+    # Provide enough experiences: 2-3 per full day (morning + afternoon + optional evening)
+    experience_count = max((brief.trip_length_days or 1) * 3, 6)
+    experience_names = [e.name for e in ranked_experiences[:experience_count]]
 
     return DailyStructureInput(
         destination=brief.destination or "",
@@ -617,49 +619,71 @@ def compose_final_reply(
         "top_experiences": [e.name for e in itinerary.experiences[:3]],
         "day_themes": [d.theme for d in itinerary.days],
         "weather": itinerary.weather.conditions_summary if itinerary.weather else None,
-        "budget_total": itinerary.budget_estimate.total_estimated_usd if itinerary.budget_estimate else None,
+        "budget_total": itinerary.budget_estimate.grand_total_usd if itinerary.budget_estimate else None,
     }
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=500,
-        system=(
-            f"{system_prompt}\n\n"
-            "You are Vela, a thoughtful travel concierge. "
-            "Return JSON with two keys: 'reply' (string) and 'story_meta' (object).\n"
-            "reply: concise summary (under 150 words), same language as user. "
-            "Mention hotel, key highlight, food anchor. End with one follow-up question.\n"
-            "story_meta: {\n"
-            '  "trip_tone": 2-4 word descriptor e.g. "culinary & artistic",\n'
-            '  "key_moments": array of 3-5 vivid standout moments,\n'
-            '  "cultural_notes": array of 2-3 practical etiquette tips\n'
-            "}\n"
-            "Return only valid JSON."
-        ),
-        messages=[
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "planning_brief": brief.model_dump(mode="json"),
-                        "changed_fields": sorted(changed_fields),
-                        "itinerary_summary": compact_itin,
-                    },
-                    ensure_ascii=False,
-                ),
-            }
-        ],
-    )
-    raw = extract_text(normalize_blocks(response.content))
     try:
-        parsed = parse_json_block(raw)
-        reply_text = parsed.get("reply", raw)
-        story_meta = parsed.get("story_meta", {})
-        # Attach story_meta back onto the itinerary object via a side-channel dict
-        # (caller in orchestrator will apply these to the itinerary model)
-        return reply_text, story_meta
-    except Exception:
-        return raw, {}
+        response = client.messages.create(
+            model=model,
+            max_tokens=500,
+            system=(
+                f"{system_prompt}\n\n"
+                "You are Vela, a thoughtful travel concierge. "
+                "Return JSON with two keys: 'reply' (string) and 'story_meta' (object).\n"
+                "reply: concise summary (under 150 words), same language as user. "
+                "Mention hotel, key highlight, food anchor. End with one follow-up question.\n"
+                "story_meta: {\n"
+                '  "trip_tone": 2-4 word descriptor e.g. "culinary & artistic",\n'
+                '  "key_moments": array of 3-5 vivid standout moments,\n'
+                '  "cultural_notes": array of 2-3 practical etiquette tips\n'
+                "}\n"
+                "Return only valid JSON."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "planning_brief": brief.model_dump(mode="json"),
+                            "changed_fields": sorted(changed_fields),
+                            "itinerary_summary": compact_itin,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+        )
+        raw = extract_text(normalize_blocks(response.content))
+        try:
+            parsed = parse_json_block(raw)
+            reply_text = parsed.get("reply", raw)
+            story_meta = parsed.get("story_meta", {})
+            return reply_text, story_meta
+        except Exception:
+            return raw, {}
+    except Exception as exc:
+        # Fallback: generate a simple reply without Claude API call
+        import logging
+        logging.error("compose_final_reply failed: %s", exc)
+
+        standout_bits = []
+        if itinerary.selected_hotel:
+            standout_bits.append(f"I selected **{itinerary.selected_hotel.name}** as your base")
+        if itinerary.restaurants:
+            standout_bits.append(f"anchored dining around **{itinerary.restaurants[0].name}**")
+
+        fallback_reply = (
+            f"I've built your {itinerary.trip_length_days}-day {itinerary.destination} plan"
+            f" for {', '.join(itinerary.interests) if itinerary.interests else 'your trip'}. "
+            + (". ".join(standout_bits) + ". " if standout_bits else "")
+            + "If you want, I can now refine it for pace, budget, or neighborhood preference."
+        )
+        fallback_meta = {
+            "trip_tone": "curated & personal",
+            "key_moments": [d.theme for d in itinerary.days[:3]] if itinerary.days else [],
+            "cultural_notes": [],
+        }
+        return fallback_reply, fallback_meta
 
 
 def compact_reply(reply: str, itinerary: ItineraryDraft | None) -> str:

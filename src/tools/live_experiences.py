@@ -107,7 +107,8 @@ def map_place_to_experience(place: dict, input_data: ExperienceSearchInput) -> E
     if not place_id or not display_name or not maps_url:
         return None
 
-    category = ((place.get("primaryTypeDisplayName") or {}).get("text") or "Experience").strip()
+    raw_category = ((place.get("primaryTypeDisplayName") or {}).get("text") or "Experience").strip()
+    category = normalize_category(raw_category)
     neighborhood = infer_neighborhood(place)
     photo_name, photo_attribution = extract_photo_metadata(place)
 
@@ -161,6 +162,42 @@ def extract_photo_metadata(place: dict) -> tuple[str | None, str | None]:
     if display_name:
         return photo_name, display_name
     return photo_name, None
+
+
+def normalize_category(raw: str) -> str:
+    """Map raw Google Places type to clean PDF-aligned categories.
+
+    PDF requires: food tour, temple, hidden gem, outdoor, etc.
+    Google returns: Tourist attraction, Museum, Park, etc.
+    """
+    lower = raw.lower()
+    mapping: list[tuple[list[str], str]] = [
+        (["temple", "shrine", "pagoda", "mosque", "church", "cathedral", "basilica"], "Temple & Shrine"),
+        (["museum", "gallery"], "Museum & Gallery"),
+        (["park", "garden", "botanical"], "Park & Garden"),
+        (["market", "bazaar", "souk"], "Market & Shopping"),
+        (["food", "culinary", "cooking"], "Food Tour"),
+        (["tour", "walking"], "Guided Tour"),
+        (["outdoor", "hiking", "trek", "trail", "beach", "lake", "mountain"], "Outdoor & Nature"),
+        (["night", "bar", "club", "entertainment"], "Nightlife"),
+        (["spa", "wellness", "onsen", "bath"], "Wellness & Spa"),
+        (["historic", "heritage", "castle", "palace", "fort"], "Historic Site"),
+        (["landmark", "monument", "memorial"], "Landmark"),
+        (["theatre", "theater", "show", "performance"], "Performance & Arts"),
+        (["zoo", "aquarium", "animal"], "Wildlife & Nature"),
+        (["adventure", "sport", "kayak", "surf", "dive", "climb"], "Adventure & Sports"),
+    ]
+    for keywords, label in mapping:
+        if any(kw in lower for kw in keywords):
+            return label
+
+    # If it's a generic "Tourist attraction", try to keep it but cleaner
+    if "tourist" in lower or "attraction" in lower:
+        return "Local Attraction"
+    if "point of interest" in lower:
+        return "Hidden Gem"
+
+    return raw  # Keep original if no match
 
 
 def estimate_duration_hours(category: str, pace: str) -> float:

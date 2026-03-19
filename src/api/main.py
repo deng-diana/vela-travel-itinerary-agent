@@ -92,8 +92,19 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         orchestrator = get_orchestrator()
 
         def event_stream():
-            for event in orchestrator.stream(state=state, user_message=request.message):
-                yield _format_sse(event.type, event.model_dump(mode="json"))
+            try:
+                for event in orchestrator.stream(state=state, user_message=request.message):
+                    yield _format_sse(event.type, event.model_dump(mode="json"))
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                error_event = {
+                    "type": "error",
+                    "message": f"Server error: {exc}",
+                    "tool_name": None,
+                    "payload": None,
+                }
+                yield _format_sse("error", error_event)
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
     except RuntimeError as exc:
