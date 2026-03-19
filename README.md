@@ -101,6 +101,10 @@ For hotels, the production path would be the Booking.com Demand API for real ava
 ## Local Setup
 
 ```bash
+# Configure environment
+cp .env.example .env
+# Fill in ANTHROPIC_API_KEY and GOOGLE_MAPS_API_KEY in .env
+
 # Backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
@@ -110,7 +114,9 @@ uvicorn src.api.main:app --reload
 cd src/ui && npm install && npm run dev
 ```
 
-## Environment Variables (.env)
+## Environment Variables
+
+See [`.env.example`](.env.example) for the full list.
 
 - `ANTHROPIC_API_KEY` — required
 - `GOOGLE_MAPS_API_KEY` — required for live data (falls back to mock without it)
