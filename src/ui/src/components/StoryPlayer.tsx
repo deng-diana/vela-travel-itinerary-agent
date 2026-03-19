@@ -46,6 +46,19 @@ function toolToSection(toolName: string): string | null {
   return map[toolName] ?? null
 }
 
+// Map slide type to section (reverse of toolToSection, for rerun overlay)
+function slideTypeToSection(slideType: string): string | null {
+  const map: Record<string, string> = {
+    weather: 'weather',
+    highlights: 'highlights',
+    day: 'days',
+    practical: 'practical',
+    packing: 'packing',
+    closing: 'closing',
+  }
+  return map[slideType] ?? null
+}
+
 export const StoryPlayer = memo(function StoryPlayer({
   slides,
   fullScreen = false,
@@ -68,72 +81,155 @@ export const StoryPlayer = memo(function StoryPlayer({
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
-  // ── Progressive reveal queue ──────────────────────────────────────
-  // Instead of showing all slides at once, reveal them one at a time
-  const [revealedCount, setRevealedCount] = useState(0)
-  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const prevTotalSlidesRef = useRef(0)
+  // ── Progressive reveal — two modes ───────────────────────────────
+  // First run:  ID-based (new slide IDs appear as tools complete)
+  // Rerun:      Step-based (completed tool steps reveal their slide types)
+  //             Slide IDs are stable on rerun, so ID-detection would never fire.
+  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set())
+  const [lastRevealedId, setLastRevealedId] = useState<string | null>(null)
+  const prevSlideIdsRef = useRef<Set<string>>(new Set())
+  const revealTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
 
-  // When slides array grows, start revealing new slides one by one
+  // Rerun scroll tracking — declared here so reset effect can access them
+  const prevActiveSectionRef = useRef<string | null>(null)
+  const hasScrolledForRerunRef = useRef(false)
+
+  // Rerun mode flag — set to true from streaming start until streaming end
+  const isRerunRef = useRef(false)
+  // Tracks which tool names have already triggered reveals during rerun
+  const revealedToolsRef = useRef<Set<string>>(new Set())
+
+  // Which slide types each tool produces (for step-based rerun reveals)
+  const TOOL_TO_SLIDE_TYPES: Record<string, string[]> = {
+    get_weather: ['weather'],
+    get_hotels: ['highlights'],
+    get_restaurants: ['highlights'],
+    get_experiences: ['highlights'],
+    get_daily_structure: ['day'],
+    estimate_budget: ['practical'],
+    get_visa_requirements: ['practical'],
+    get_packing_suggestions: ['packing'],
+    write_summary: ['closing'],
+  }
+
+  // ── FIRST RUN: ID-based progressive reveal ────────────────────────
+  // When slides array changes, detect new IDs and stagger-reveal them.
+  // During rerun this effect only does housekeeping (no reveals).
   useEffect(() => {
-    const total = slides.length
-    const prevTotal = prevTotalSlidesRef.current
+    const currentIds = slides.map((s) => s.id)
 
-    if (total > prevTotal) {
-      // New slides arrived — reveal them sequentially
-      // Clear any existing reveal timer
-      if (revealTimerRef.current) {
-        clearTimeout(revealTimerRef.current)
-        revealTimerRef.current = null
+    if (isRerunRef.current) {
+      // Rerun: just keep prevSlideIdsRef current; reveals come from [steps] effect.
+      // Surgically remove any IDs that no longer exist (e.g. day count changed).
+      const removedIds = [...prevSlideIdsRef.current].filter((id) => !currentIds.includes(id))
+      if (removedIds.length > 0) {
+        setRevealedIds((prev) => {
+          const next = new Set(prev)
+          removedIds.forEach((id) => next.delete(id))
+          return next
+        })
       }
-
-      // If this is the first slide (cover), show it immediately
-      if (prevTotal === 0 && total >= 1) {
-        setRevealedCount(1)
-        prevTotalSlidesRef.current = total
-        // Then reveal remaining slides with delays
-        if (total > 1) {
-          let delay = 600
-          for (let i = 1; i < total; i++) {
-            const idx = i
-            setTimeout(() => setRevealedCount((c) => Math.max(c, idx + 1)), delay)
-            // Day slides get more time (800ms), others get 500ms
-            delay += slides[i]?.type === 'day' ? 900 : 500
-          }
-        }
-        return
-      }
-
-      // For subsequent batches of new slides, reveal them one at a time with stagger
-      let delay = 300
-      for (let i = prevTotal; i < total; i++) {
-        const targetCount = i + 1
-        setTimeout(() => setRevealedCount((c) => Math.max(c, targetCount)), delay)
-        // Day slides get more reveal time so user can absorb content
-        delay += slides[i]?.type === 'day' ? 900 : 500
-      }
+      prevSlideIdsRef.current = new Set(currentIds)
+      return
     }
 
-    // When slides shrink (new session), reset
-    if (total < prevTotal) {
-      setRevealedCount(total)
+    const newIds = currentIds.filter((id) => !prevSlideIdsRef.current.has(id))
+    const removedIds = [...prevSlideIdsRef.current].filter((id) => !currentIds.includes(id))
+
+    // Surgically remove stale IDs — never wipe the entire set
+    if (removedIds.length > 0) {
+      setRevealedIds((prev) => {
+        const next = new Set(prev)
+        removedIds.forEach((id) => next.delete(id))
+        return next
+      })
+      setLastRevealedId(null)
+      revealTimersRef.current.forEach(clearTimeout)
+      revealTimersRef.current = []
+      prevSlideIdsRef.current = new Set(currentIds)
     }
 
-    prevTotalSlidesRef.current = total
-  }, [slides.length]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (newIds.length === 0) {
+      prevSlideIdsRef.current = new Set(currentIds)
+      return
+    }
 
-  // Reset reveal count when streaming starts fresh
+    revealTimersRef.current.forEach(clearTimeout)
+    revealTimersRef.current = []
+
+    const isFirstBatch = prevSlideIdsRef.current.size === 0
+    let delay = isFirstBatch ? 0 : 300
+
+    for (const newId of newIds) {
+      const slide = slides.find((s) => s.id === newId)
+      const t = setTimeout(() => {
+        setRevealedIds((prev) => new Set([...prev, newId]))
+        setLastRevealedId(newId)
+      }, delay)
+      revealTimersRef.current.push(t)
+      delay += slide?.type === 'day' ? 900 : 500
+    }
+
+    prevSlideIdsRef.current = new Set(currentIds)
+  }, [slides]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── RERUN: Step-based progressive reveal ─────────────────────────
+  // Watches completed tool steps and immediately reveals the corresponding
+  // slide types. This gives true progressive reveal even though IDs are stable.
   useEffect(() => {
-    if (isStreaming && slides.length <= 1) {
-      setRevealedCount(slides.length)
-      prevTotalSlidesRef.current = slides.length
+    if (!isRerunRef.current || fullScreen) return
+
+    for (const step of steps) {
+      if (step.status !== 'completed') continue
+      const toolName = step.id.replace(/-completed-\d+$/, '')
+      if (revealedToolsRef.current.has(toolName)) continue
+      revealedToolsRef.current.add(toolName)
+
+      const slideTypes = TOOL_TO_SLIDE_TYPES[toolName] ?? []
+      if (slideTypes.length === 0) continue
+
+      const matchingIds = slides.filter((s) => slideTypes.includes(s.type)).map((s) => s.id)
+      if (matchingIds.length > 0) {
+        setRevealedIds((prev) => {
+          const next = new Set(prev)
+          matchingIds.forEach((id) => next.add(id))
+          return next
+        })
+      }
+    }
+  }, [steps, slides, fullScreen]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset when streaming starts (new session or rerun)
+  useEffect(() => {
+    hasScrolledForRerunRef.current = false
+    prevActiveSectionRef.current = null
+
+    if (isStreaming) {
+      revealTimersRef.current.forEach(clearTimeout)
+      revealTimersRef.current = []
+      setLastRevealedId(null)
+
+      if (slides.length > 0) {
+        // Rerun: cover stays visible; other sections revealed progressively via [steps]
+        isRerunRef.current = true
+        revealedToolsRef.current = new Set()
+        const coverIds = new Set(slides.filter((s) => s.type === 'cover').map((s) => s.id))
+        setRevealedIds(coverIds)
+        // Keep all existing IDs in prev so [slides] doesn't see them as "new"
+        prevSlideIdsRef.current = new Set(slides.map((s) => s.id))
+      } else {
+        // Fresh start
+        isRerunRef.current = false
+        setRevealedIds(new Set())
+        prevSlideIdsRef.current = new Set()
+      }
     }
   }, [isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // In fullScreen or non-streaming, show all slides immediately
-  const visibleSlides = (fullScreen || !isStreaming) && revealedCount < slides.length
+  const visibleSlides = fullScreen || !isStreaming
     ? slides
-    : slides.slice(0, revealedCount)
+    : slides.filter((s) => revealedIds.has(s.id))
 
   // Track which section the active tool maps to, for skeleton focus
   const activeStep = steps.find((s) => s.status === 'active')
@@ -150,45 +246,33 @@ export const StoryPlayer = memo(function StoryPlayer({
   const showSkeletons = isStreaming && !fullScreen
 
   // ── Auto-scroll: follow the latest revealed slide ─────────────────
-  const prevRevealedRef = useRef(0)
   useEffect(() => {
-    if (fullScreen) {
-      prevRevealedRef.current = revealedCount
-      return
+    if (fullScreen || !isStreaming || !lastRevealedId) return
+
+    // Cover just appeared — scroll to skeleton zone after a beat
+    if (revealedIds.size === 1) {
+      const t = setTimeout(() => {
+        skeletonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 400)
+      return () => clearTimeout(t)
     }
 
-    if (revealedCount > prevRevealedRef.current && revealedCount > 0) {
-      const latestIdx = revealedCount - 1
-      const latestEl = slideRefs.current[latestIdx]
-
-      if (revealedCount === 1 && isStreaming) {
-        // Cover just appeared — scroll to skeleton zone after a beat
-        const t = setTimeout(() => {
-          skeletonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }, 400)
-        prevRevealedRef.current = revealedCount
-        return () => clearTimeout(t)
-      }
-
-      if (latestEl) {
-        // Scroll to the newly revealed slide
-        const t = setTimeout(() => {
-          latestEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }, 80)
-        prevRevealedRef.current = revealedCount
-        return () => clearTimeout(t)
-      }
+    // Scroll to the newly revealed slide (find its position in visibleSlides)
+    const idx = visibleSlides.findIndex((s) => s.id === lastRevealedId)
+    if (idx !== -1 && slideRefs.current[idx]) {
+      const t = setTimeout(() => {
+        slideRefs.current[idx]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 80)
+      return () => clearTimeout(t)
     }
-
-    prevRevealedRef.current = revealedCount
-  }, [revealedCount, fullScreen, isStreaming])
+  }, [lastRevealedId, fullScreen, isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll to the specific skeleton section that matches the active tool
-  // (only when no new slides are being revealed)
+  // (only when no new slides are being revealed — i.e. reveals are caught up)
   useEffect(() => {
     if (fullScreen || !isStreaming || !activeSection) return
-    // Don't fight with reveal scroll — only scroll to skeleton if we're caught up
-    if (revealedCount < slides.length) return
+    // Don't fight with reveal scroll — only scroll to skeleton if caught up
+    if (visibleSlides.length < slides.length) return
 
     const refMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
       weather: weatherSkeletonRef,
@@ -205,9 +289,44 @@ export const StoryPlayer = memo(function StoryPlayer({
       }, 300)
       return () => clearTimeout(t)
     }
-  }, [activeSection, isStreaming, fullScreen, revealedCount, slides.length])
+  }, [activeSection, isStreaming, fullScreen, visibleSlides.length, slides.length]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Handle streaming end — scroll back to top
+  // During a rerun: scroll to the slide being updated — but only for MAJOR
+  // sections (days, highlights, weather). For practical/packing the isUpdating
+  // overlay shows in-place without hijacking the scroll position.
+  const SCROLL_WORTHY_SECTIONS = new Set(['days', 'highlights', 'weather'])
+
+  useEffect(() => {
+    if (fullScreen || !isStreaming) {
+      prevActiveSectionRef.current = activeSection
+      hasScrolledForRerunRef.current = false
+      return
+    }
+
+    if (!activeSection || activeSection === prevActiveSectionRef.current) return
+    prevActiveSectionRef.current = activeSection
+
+    // Only scroll for major sections that are worth navigating to
+    if (!SCROLL_WORTHY_SECTIONS.has(activeSection)) return
+
+    // Don't scroll more than once per rerun cycle to avoid jarring jumps
+    if (hasScrolledForRerunRef.current) return
+
+    // Find the slide (for days, scroll to the FIRST day slide)
+    const idx = visibleSlides.findIndex((s) => slideTypeToSection(s.type) === activeSection)
+    if (idx === -1) return // no existing slide — skeleton handles it
+
+    const el = slideRefs.current[idx]
+    if (el) {
+      hasScrolledForRerunRef.current = true
+      const t = setTimeout(() => {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }, 300)
+      return () => clearTimeout(t)
+    }
+  }, [activeSection, isStreaming, fullScreen, visibleSlides]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Handle streaming end — reveal remaining slides and scroll to top
   const wasStreamingRef = useRef(false)
   useEffect(() => {
     if (fullScreen) {
@@ -216,12 +335,16 @@ export const StoryPlayer = memo(function StoryPlayer({
     }
     const justEnded = wasStreamingRef.current && !isStreaming
 
-    if (justEnded && slides.length > 2) {
-      // Plan complete: reveal any remaining slides, then scroll to top
-      setRevealedCount(slides.length)
+    if (justEnded && slides.length > 0) {
+      revealTimersRef.current.forEach(clearTimeout)
+      revealTimersRef.current = []
+      // Reveal any slides that didn't get revealed during streaming (e.g. closing)
+      setRevealedIds(new Set(slides.map((s) => s.id)))
+      const scrollDelay = isRerunRef.current ? 600 : 1200
+      isRerunRef.current = false
       const t = setTimeout(() => {
         containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
-      }, 1200)
+      }, scrollDelay)
       wasStreamingRef.current = isStreaming
       return () => clearTimeout(t)
     }
@@ -331,6 +454,7 @@ export const StoryPlayer = memo(function StoryPlayer({
       {/* Scrollable slides container */}
       <div
         ref={containerRef}
+        data-story-scroll
         className={scrollClass}
         style={fullScreen ? { scrollSnapType: 'y mandatory', scrollBehavior: 'smooth' } : { scrollBehavior: 'smooth' }}
       >
@@ -341,6 +465,7 @@ export const StoryPlayer = memo(function StoryPlayer({
             fullScreen={fullScreen}
             slideHeight={slideHeight}
             minSlideHeight={minSlideHeight}
+            isUpdating={isStreaming && !fullScreen && slideTypeToSection(slide.type) === activeSection}
             ref={(el) => { slideRefs.current[i] = el }}
           />
         ))}
@@ -579,10 +704,11 @@ interface SlideWrapperProps {
   fullScreen: boolean
   slideHeight: string
   minSlideHeight: string
+  isUpdating?: boolean
 }
 
 const SlideWrapper = memo(forwardRef<HTMLElement, SlideWrapperProps>(
-  function SlideWrapper({ slide, fullScreen, slideHeight, minSlideHeight: _minSlideHeight }, ref) {
+  function SlideWrapper({ slide, fullScreen, slideHeight, minSlideHeight: _minSlideHeight, isUpdating = false }, ref) {
     // Day slides can grow beyond one viewport; all others fill exactly one viewport
     const isDaySlide = slide.type === 'day'
     const style: React.CSSProperties = fullScreen
@@ -592,14 +718,17 @@ const SlideWrapper = memo(forwardRef<HTMLElement, SlideWrapperProps>(
           height: slideHeight,
           overflow: 'hidden',
           flexShrink: 0,
+          position: 'relative',
         }
       : isDaySlide
       ? {
           minHeight: '100vh',
+          position: 'relative',
         }
       : {
           height: '100vh',
           overflow: 'hidden',
+          position: 'relative',
         }
 
     const inner = renderSlide(slide)
@@ -614,6 +743,42 @@ const SlideWrapper = memo(forwardRef<HTMLElement, SlideWrapperProps>(
         transition={{ duration: 0.45, ease: 'easeOut' }}
       >
         {inner}
+        <AnimatePresence>
+          {isUpdating && (
+            <motion.div
+              key="updating-overlay"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25 }}
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                boxShadow: 'inset 0 0 0 1px rgba(196,255,77,0.25)',
+              }}
+            >
+              {/* Updating badge — top-right corner */}
+              <div
+                className="absolute top-4 right-5 flex items-center gap-1.5 rounded-full px-3 py-1.5"
+                style={{
+                  background: 'rgba(10,9,8,0.88)',
+                  border: '1px solid rgba(196,255,77,0.4)',
+                  backdropFilter: 'blur(6px)',
+                }}
+              >
+                <span
+                  className="h-1.5 w-1.5 rounded-full animate-pulse"
+                  style={{ background: 'var(--story-accent)' }}
+                />
+                <span
+                  className="text-[10px] uppercase tracking-[0.18em]"
+                  style={{ color: 'var(--story-accent)', fontFamily: 'var(--font-data)' }}
+                >
+                  Updating
+                </span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
     )
   }

@@ -155,8 +155,6 @@ export function buildStory(
   if (!itinerary || !itinerary.destination) return []
 
   const slides: StorySlide[] = []
-  let counter = 0
-  const id = (type: string) => `${type}-${++counter}`
 
   // 1. COVER — always present once we have a destination
   // Background photo: iconic destination landmark via Unsplash (free, no key needed)
@@ -168,7 +166,7 @@ export function buildStory(
     null
 
   slides.push({
-    id: id('cover'),
+    id: 'cover',
     type: 'cover',
     data: {
       destination: itinerary.destination,
@@ -184,7 +182,7 @@ export function buildStory(
   // 2. WEATHER (conditional — appears when get_weather completes)
   if (itinerary.weather) {
     slides.push({
-      id: id('weather'),
+      id: 'weather',
       type: 'weather',
       data: {
         destination: itinerary.weather.destination,
@@ -208,7 +206,7 @@ export function buildStory(
 
   if (allHotels.length > 0) {
     slides.push({
-      id: id('highlights'),
+      id: 'highlights',
       type: 'highlights',
       data: {
         hotels: allHotels.map(hotel => ({
@@ -246,14 +244,15 @@ export function buildStory(
     }))
     const daySlides = splitDay({ ...day, items: enrichedItems }, itinerary.destination)
     for (const s of daySlides) {
-      slides.push({ id: id('day'), type: 'day', data: s })
+      const slideId = s.part ? `day-${s.day_number}-pt${s.part}` : `day-${s.day_number}`
+      slides.push({ id: slideId, type: 'day', data: s })
     }
   }
 
   // 5. PRACTICAL (conditional — appears when budget or visa arrive)
   if (itinerary.budget_estimate || itinerary.visa_requirements) {
     slides.push({
-      id: id('practical'),
+      id: 'practical',
       type: 'practical',
       data: {
         budget: itinerary.budget_estimate ?? null,
@@ -265,7 +264,7 @@ export function buildStory(
   // 6. PACKING (conditional)
   if (itinerary.packing_suggestions) {
     slides.push({
-      id: id('packing'),
+      id: 'packing',
       type: 'packing',
       data: {
         weather_note: itinerary.packing_suggestions.weather_note,
@@ -278,7 +277,7 @@ export function buildStory(
   const hasMeaningfulSummary = itinerary.summary && itinerary.summary !== 'Trip plan updated.' && itinerary.days.length > 0
   if (hasMeaningfulSummary) {
     slides.push({
-      id: id('closing'),
+      id: 'closing',
       type: 'closing',
       data: {
         destination: itinerary.destination,
