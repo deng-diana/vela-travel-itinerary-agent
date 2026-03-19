@@ -68,6 +68,73 @@ export const StoryPlayer = memo(function StoryPlayer({
   const [publishedUrl, setPublishedUrl] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
 
+  // ── Progressive reveal queue ──────────────────────────────────────
+  // Instead of showing all slides at once, reveal them one at a time
+  const [revealedCount, setRevealedCount] = useState(0)
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const prevTotalSlidesRef = useRef(0)
+
+  // When slides array grows, start revealing new slides one by one
+  useEffect(() => {
+    const total = slides.length
+    const prevTotal = prevTotalSlidesRef.current
+
+    if (total > prevTotal) {
+      // New slides arrived — reveal them sequentially
+      // Clear any existing reveal timer
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current)
+        revealTimerRef.current = null
+      }
+
+      // If this is the first slide (cover), show it immediately
+      if (prevTotal === 0 && total >= 1) {
+        setRevealedCount(1)
+        prevTotalSlidesRef.current = total
+        // Then reveal remaining slides with delays
+        if (total > 1) {
+          let delay = 600
+          for (let i = 1; i < total; i++) {
+            const idx = i
+            setTimeout(() => setRevealedCount((c) => Math.max(c, idx + 1)), delay)
+            // Day slides get more time (800ms), others get 500ms
+            delay += slides[i]?.type === 'day' ? 900 : 500
+          }
+        }
+        return
+      }
+
+      // For subsequent batches of new slides, reveal them one at a time with stagger
+      let delay = 300
+      for (let i = prevTotal; i < total; i++) {
+        const targetCount = i + 1
+        setTimeout(() => setRevealedCount((c) => Math.max(c, targetCount)), delay)
+        // Day slides get more reveal time so user can absorb content
+        delay += slides[i]?.type === 'day' ? 900 : 500
+      }
+    }
+
+    // When slides shrink (new session), reset
+    if (total < prevTotal) {
+      setRevealedCount(total)
+    }
+
+    prevTotalSlidesRef.current = total
+  }, [slides.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset reveal count when streaming starts fresh
+  useEffect(() => {
+    if (isStreaming && slides.length <= 1) {
+      setRevealedCount(slides.length)
+      prevTotalSlidesRef.current = slides.length
+    }
+  }, [isStreaming]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // In fullScreen or non-streaming, show all slides immediately
+  const visibleSlides = (fullScreen || !isStreaming) && revealedCount < slides.length
+    ? slides
+    : slides.slice(0, revealedCount)
+
   // Track which section the active tool maps to, for skeleton focus
   const activeStep = steps.find((s) => s.status === 'active')
   // Step id format: "toolName-active-timestamp" — extract toolName
@@ -75,50 +142,53 @@ export const StoryPlayer = memo(function StoryPlayer({
   const activeSection = activeToolName ? toolToSection(activeToolName) : null
 
   // Determine which skeleton placeholders to show during streaming
-  const hasWeather = slides.some((s) => s.type === 'weather')
-  const hasHighlights = slides.some((s) => s.type === 'highlights')
-  const hasDays = slides.some((s) => s.type === 'day')
-  const hasPractical = slides.some((s) => s.type === 'practical')
-  const hasPacking = slides.some((s) => s.type === 'packing')
+  const hasWeather = visibleSlides.some((s) => s.type === 'weather')
+  const hasHighlights = visibleSlides.some((s) => s.type === 'highlights')
+  const hasDays = visibleSlides.some((s) => s.type === 'day')
+  const hasPractical = visibleSlides.some((s) => s.type === 'practical')
+  const hasPacking = visibleSlides.some((s) => s.type === 'packing')
   const showSkeletons = isStreaming && !fullScreen
 
-  // Smart auto-scroll: when a new slide arrives, pause on it then scroll to next skeleton
-  const prevSlideCount = useRef(0)
+  // ── Auto-scroll: follow the latest revealed slide ─────────────────
+  const prevRevealedRef = useRef(0)
   useEffect(() => {
     if (fullScreen) {
-      prevSlideCount.current = slides.length
+      prevRevealedRef.current = revealedCount
       return
     }
-    if (slides.length > prevSlideCount.current) {
-      if (slides.length === 1 && isStreaming) {
-        // Cover just appeared — scroll past it to show the skeleton loading zone
+
+    if (revealedCount > prevRevealedRef.current && revealedCount > 0) {
+      const latestIdx = revealedCount - 1
+      const latestEl = slideRefs.current[latestIdx]
+
+      if (revealedCount === 1 && isStreaming) {
+        // Cover just appeared — scroll to skeleton zone after a beat
         const t = setTimeout(() => {
           skeletonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }, 300)
-        prevSlideCount.current = slides.length
+        }, 400)
+        prevRevealedRef.current = revealedCount
         return () => clearTimeout(t)
       }
-      if (slides.length > 1) {
-        // A real content slide just landed — scroll to it, then after 1s scroll to next skeleton
-        const lastEl = slideRefs.current[slides.length - 1]
-        if (lastEl) lastEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
-        // After 1s pause on the new content, scroll to skeleton zone for next section
-        if (isStreaming) {
-          const t = setTimeout(() => {
-            skeletonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-          }, 1200)
-          prevSlideCount.current = slides.length
-          return () => clearTimeout(t)
-        }
+      if (latestEl) {
+        // Scroll to the newly revealed slide
+        const t = setTimeout(() => {
+          latestEl.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }, 80)
+        prevRevealedRef.current = revealedCount
+        return () => clearTimeout(t)
       }
     }
-    prevSlideCount.current = slides.length
-  }, [slides.length, isStreaming, fullScreen])
+
+    prevRevealedRef.current = revealedCount
+  }, [revealedCount, fullScreen, isStreaming])
 
   // Scroll to the specific skeleton section that matches the active tool
+  // (only when no new slides are being revealed)
   useEffect(() => {
     if (fullScreen || !isStreaming || !activeSection) return
+    // Don't fight with reveal scroll — only scroll to skeleton if we're caught up
+    if (revealedCount < slides.length) return
 
     const refMap: Record<string, React.RefObject<HTMLDivElement | null>> = {
       weather: weatherSkeletonRef,
@@ -132,35 +202,26 @@ export const StoryPlayer = memo(function StoryPlayer({
     if (targetRef?.current) {
       const t = setTimeout(() => {
         targetRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 200)
+      }, 300)
       return () => clearTimeout(t)
     }
-  }, [activeSection, isStreaming, fullScreen])
+  }, [activeSection, isStreaming, fullScreen, revealedCount, slides.length])
 
-  // Handle streaming start/end scroll transitions
+  // Handle streaming end — scroll back to top
   const wasStreamingRef = useRef(false)
   useEffect(() => {
     if (fullScreen) {
       wasStreamingRef.current = isStreaming
       return
     }
-    const justStarted = !wasStreamingRef.current && isStreaming
     const justEnded = wasStreamingRef.current && !isStreaming
 
-    if (justStarted && slides.length > 1) {
-      prevSlideCount.current = slides.length
-      const t = setTimeout(() => {
-        skeletonRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 200)
-      wasStreamingRef.current = isStreaming
-      return () => clearTimeout(t)
-    }
-
     if (justEnded && slides.length > 2) {
-      // Plan complete: auto-scroll back to cover slide
+      // Plan complete: reveal any remaining slides, then scroll to top
+      setRevealedCount(slides.length)
       const t = setTimeout(() => {
         containerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
-      }, 700)
+      }, 1200)
       wasStreamingRef.current = isStreaming
       return () => clearTimeout(t)
     }
@@ -194,7 +255,7 @@ export const StoryPlayer = memo(function StoryPlayer({
 
     slideRefs.current.forEach((el) => { if (el) observer.observe(el) })
     return () => observer.disconnect()
-  }, [slides.length, fullScreen])
+  }, [visibleSlides.length, fullScreen])
 
   const scrollTo = useCallback((index: number) => {
     const el = slideRefs.current[index]
@@ -207,7 +268,7 @@ export const StoryPlayer = memo(function StoryPlayer({
     function onKey(e: KeyboardEvent) {
       if (e.key === 'ArrowDown' || e.key === 'PageDown') {
         e.preventDefault()
-        scrollTo(Math.min(currentIndex + 1, slides.length - 1))
+        scrollTo(Math.min(currentIndex + 1, visibleSlides.length - 1))
       } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
         e.preventDefault()
         scrollTo(Math.max(currentIndex - 1, 0))
@@ -215,7 +276,7 @@ export const StoryPlayer = memo(function StoryPlayer({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [currentIndex, slides.length, scrollTo, fullScreen])
+  }, [currentIndex, visibleSlides.length, scrollTo, fullScreen])
 
   // Publish
   async function handlePublish() {
@@ -273,7 +334,7 @@ export const StoryPlayer = memo(function StoryPlayer({
         className={scrollClass}
         style={fullScreen ? { scrollSnapType: 'y mandatory', scrollBehavior: 'smooth' } : { scrollBehavior: 'smooth' }}
       >
-        {slides.map((slide, i) => (
+        {visibleSlides.map((slide, i) => (
           <SlideWrapper
             key={slide.id}
             slide={slide}
@@ -365,7 +426,7 @@ export const StoryPlayer = memo(function StoryPlayer({
         </AnimatePresence>
 
         {/* Publish bar */}
-        {!isStreaming && slides.length > 2 && !fullScreen && itinerary && (
+        {!isStreaming && visibleSlides.length > 2 && !fullScreen && itinerary && (
           <div
             className="px-8 py-6 lg:px-16 flex items-center justify-center gap-3"
             style={{ background: 'var(--story-bg)' }}
@@ -410,7 +471,7 @@ export const StoryPlayer = memo(function StoryPlayer({
           className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-2.5"
           aria-label="Slide navigation"
         >
-          {slides.map((slide, i) => (
+          {visibleSlides.map((slide, i) => (
             <button
               key={slide.id}
               onClick={() => scrollTo(i)}
@@ -438,7 +499,7 @@ export const StoryPlayer = memo(function StoryPlayer({
             letterSpacing: '0.1em',
           }}
         >
-          {String(currentIndex + 1).padStart(2, '0')} / {String(slides.length).padStart(2, '0')}
+          {String(currentIndex + 1).padStart(2, '0')} / {String(visibleSlides.length).padStart(2, '0')}
         </div>
       )}
     </div>

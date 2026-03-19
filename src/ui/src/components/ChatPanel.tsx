@@ -1,9 +1,39 @@
-import { useEffect, useRef, useState, memo } from 'react'
+import { useEffect, useRef, useState, memo, useCallback } from 'react'
 import type { FormEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowUp, CheckCircle2, ChevronDown, Check, ChevronLeft } from 'lucide-react'
 import type { ChatMessage, AgentStep } from '../types'
 import { MarkdownMessage } from './MarkdownMessage'
+
+// ---------------------------------------------------------------------------
+// Typewriter hook — reveals text character by character
+// ---------------------------------------------------------------------------
+
+function useTypewriter(text: string, speed = 18): { displayed: string; done: boolean } {
+  const [charIndex, setCharIndex] = useState(0)
+  const [done, setDone] = useState(false)
+
+  useEffect(() => {
+    setCharIndex(0)
+    setDone(false)
+  }, [text])
+
+  useEffect(() => {
+    if (charIndex >= text.length) {
+      setDone(true)
+      return
+    }
+    const timer = setTimeout(() => {
+      // Skip ahead for spaces and punctuation to feel more natural
+      const ch = text[charIndex]
+      const skip = ch === ' ' || ch === '\n' ? 2 : 1
+      setCharIndex((prev) => Math.min(prev + skip, text.length))
+    }, speed)
+    return () => clearTimeout(timer)
+  }, [charIndex, text, speed])
+
+  return { displayed: text.slice(0, charIndex), done }
+}
 
 type ChatPanelProps = {
   sessionId: string | null
@@ -34,6 +64,13 @@ export const ChatPanel = memo(function ChatPanel({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, liveNarration, isStreaming, steps])
 
+  // Reset textarea height when input is cleared (e.g., after submit)
+  useEffect(() => {
+    if (!input && textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+    }
+  }, [input])
+
   // Split messages: show tool steps BEFORE the last assistant message
   const hasSteps = steps.length > 0
   const lastMsg = messages[messages.length - 1]
@@ -55,27 +92,27 @@ export const ChatPanel = memo(function ChatPanel({
     >
       {/* Header */}
       <div
-        className="flex items-center gap-3 px-5 py-4 flex-shrink-0"
+        className="flex items-center px-4 py-4 flex-shrink-0"
         style={{ borderBottom: '1px solid var(--story-border)' }}
       >
         <button
           onClick={() => window.location.href = '/'}
-          className="flex-shrink-0 rounded-lg p-1.5 transition-opacity hover:opacity-70"
+          className="flex-shrink-0 rounded-lg p-1 transition-opacity hover:opacity-70"
           style={{ color: 'var(--story-text)' }}
           aria-label="Back to home"
         >
-          <ChevronLeft size={20} strokeWidth={2} />
+          <ChevronLeft size={18} strokeWidth={2} />
         </button>
         <img
           src="/logo.svg"
           alt="Vela"
-          width={28}
-          height={28}
-          style={{ flexShrink: 0 }}
+          width={24}
+          height={24}
+          style={{ flexShrink: 0, marginLeft: '4px' }}
         />
         <h2
-          className="text-lg font-semibold tracking-[-0.03em]"
-          style={{ color: 'var(--story-text)', fontFamily: 'var(--font-editorial)' }}
+          className="text-base tracking-[-0.02em]"
+          style={{ color: 'var(--story-text)', fontFamily: 'var(--font-editorial)', fontWeight: 400, marginLeft: '6px' }}
         >
           Vela
         </h2>
@@ -84,63 +121,48 @@ export const ChatPanel = memo(function ChatPanel({
       {/* Messages */}
       <div className="messages-area flex-1 overflow-auto px-5 py-4">
         <div className="flex flex-col gap-3">
-          {messagesBeforeFinal.map((message, index) => (
-            <article
-              key={`${message.role}-${index}`}
-              className={`rounded-lg text-sm leading-7 ${
-                message.role === 'user' ? 'mb-4' : 'mb-4 flex gap-3'
-              }`}
-              style={
-                message.role === 'user'
-                  ? {
-                      background: 'var(--bg-user)',
-                      color: 'var(--color-text)',
-                      padding: '16px',
-                    }
-                  : {
-                      border: '1px solid var(--color-border)',
-                      color: 'var(--color-text)',
-                      padding: '20px',
-                    }
-              }
-            >
-              {message.role === 'user' ? (
-                <div className="whitespace-pre-line">{message.text}</div>
-              ) : (
-                <>
-                  <div className="flex-shrink-0 mt-0.5">
-                    <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <MarkdownMessage text={message.text} />
-                  </div>
-                </>
-              )}
-            </article>
-          ))}
+          {messagesBeforeFinal.map((message, index) =>
+            message.role === 'user' ? (
+              <div key={`user-${index}`} className="flex justify-end mb-4">
+                <article
+                  className="rounded-lg text-sm leading-7 max-w-[85%]"
+                  style={{
+                    background: 'var(--bg-user)',
+                    color: 'var(--color-text)',
+                    padding: '12px 16px',
+                  }}
+                >
+                  <div className="whitespace-pre-line">{message.text}</div>
+                </article>
+              </div>
+            ) : (
+              <article
+                key={`assistant-${index}`}
+                className="rounded-lg text-sm leading-7 mb-4 flex gap-3"
+                style={{
+                  border: '1px solid var(--color-border)',
+                  color: 'var(--color-text)',
+                  padding: '20px',
+                }}
+              >
+                <div className="flex-shrink-0 mt-0.5">
+                  <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <MarkdownMessage text={message.text} />
+                </div>
+              </article>
+            )
+          )}
 
           {/* Tool Steps — live chain shown BEFORE final assistant message */}
           {steps.length > 0 && (
             <ToolChain steps={steps} isStreaming={isStreaming} />
           )}
 
-          {/* Final assistant message — rendered AFTER tool steps */}
+          {/* Final assistant message — rendered AFTER tool steps with typewriter */}
           {finalAssistantMsg && (
-            <article
-              className="rounded-lg text-sm leading-7 mb-4 flex gap-3"
-              style={{
-                border: '1px solid var(--color-border)',
-                color: 'var(--color-text)',
-                padding: '20px',
-              }}
-            >
-              <div className="flex-shrink-0 mt-0.5">
-                <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <MarkdownMessage text={finalAssistantMsg.text} />
-              </div>
-            </article>
+            <TypewriterAssistantMessage text={finalAssistantMsg.text} />
           )}
 
           {/* Thinking dots — only before any steps or narration */}
@@ -178,38 +200,53 @@ export const ChatPanel = memo(function ChatPanel({
       >
         <form onSubmit={onSubmit}>
           <div
-            className="relative flex items-center rounded-lg"
+            className="relative flex items-end rounded-lg"
             style={{
               background: 'var(--bg-input)',
               border: '1px solid var(--color-border)',
-              padding: '24px',
+              padding: '16px 24px',
             }}
           >
-            {/* Custom thick blinking caret — visible when input is empty */}
-            {!input && <div className="custom-caret" />}
-            <textarea
-              ref={textareaRef}
-              className="flex-1 outline-none resize-none bg-transparent"
-              style={{
-                color: 'var(--color-text)',
-                fontFamily: 'var(--font-editorial)',
-                fontSize: '1rem',
-                minHeight: '24px',
-                caretColor: input ? 'var(--color-accent)' : 'transparent',
-              }}
+            <div className="relative flex-1">
+              {/* Custom thick blinking caret — visible when input is empty */}
+              {!input && <div className="custom-caret" style={{ position: 'absolute', left: 0, top: '12px' }} />}
+              <textarea
+                ref={textareaRef}
+                className="w-full outline-none resize-none bg-transparent"
+                style={{
+                  color: 'var(--color-text)',
+                  fontFamily: 'var(--font-editorial)',
+                  fontSize: '1rem',
+                  minHeight: '24px',
+                  maxHeight: '160px',
+                  overflowY: 'auto',
+                  lineHeight: '1.5',
+                  caretColor: input ? 'var(--color-accent)' : 'transparent',
+                }}
               value={input}
-              onChange={(e) => onInputChange(e.target.value)}
+              onChange={(e) => {
+                onInputChange(e.target.value)
+                // Auto-resize: reset height to auto, then set to scrollHeight
+                const el = e.target
+                el.style.height = 'auto'
+                el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+              }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
                   e.currentTarget.form?.requestSubmit()
+                  // Reset height after submit
+                  if (textareaRef.current) {
+                    textareaRef.current.style.height = 'auto'
+                  }
                 }
               }}
               placeholder="Refine the trip, change the pace, add a preference..."
               rows={1}
             />
+            </div>
             <button
-              className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80"
+              className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80 mb-[2px]"
               style={{
                 background: 'var(--color-accent)',
                 color: '#000000',
@@ -229,6 +266,53 @@ export const ChatPanel = memo(function ChatPanel({
     </section>
   )
 })
+
+// ---------------------------------------------------------------------------
+// Typewriter assistant message — reveals text like typing
+// ---------------------------------------------------------------------------
+
+function TypewriterAssistantMessage({ text }: { text: string }) {
+  const { displayed, done } = useTypewriter(text, 15)
+  const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll as text reveals
+  useEffect(() => {
+    if (!done) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
+  }, [displayed, done])
+
+  return (
+    <article
+      className="rounded-lg text-sm leading-7 mb-4 flex gap-3"
+      style={{
+        border: '1px solid var(--color-border)',
+        color: 'var(--color-text)',
+        padding: '20px',
+      }}
+    >
+      <div className="flex-shrink-0 mt-0.5">
+        <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
+      </div>
+      <div className="flex-1 min-w-0">
+        <MarkdownMessage text={displayed} />
+        {!done && (
+          <span
+            className="inline-block ml-0.5"
+            style={{
+              width: '2px',
+              height: '1em',
+              background: 'var(--color-accent)',
+              animation: 'caret-blink 1s ease-in-out infinite',
+              verticalAlign: 'text-bottom',
+            }}
+          />
+        )}
+      </div>
+      <div ref={bottomRef} />
+    </article>
+  )
+}
 
 // ---------------------------------------------------------------------------
 // Tool Chain — ChatGPT-style live chain of tool calls
@@ -285,17 +369,24 @@ function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: bo
     wasStreaming.current = isStreaming
   }, [isStreaming, activeStep])
 
+  const cardStyle: React.CSSProperties = {
+    background: '#1C2210',
+    borderRadius: '12px',
+    padding: '12px 16px',
+  }
+
   return (
-    <div className="mb-2 pl-1">
+    <div className="mb-2">
       {/* Collapsed summary — click to expand */}
       {collapsed && allDone && (
         <button
           onClick={() => setCollapsed(false)}
-          className="flex items-center gap-2.5 py-2 text-left w-full group"
+          className="flex items-start gap-2.5 py-3 px-4 text-left w-full group"
+          style={cardStyle}
         >
-          <CheckCircle2 className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
+          <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-[1px]" style={{ color: 'var(--color-accent)' }} />
           <span
-            className="flex-1 text-xs"
+            className="flex-1 text-xs leading-5"
             style={{
               fontFamily: 'var(--font-data)',
               letterSpacing: '0.02em',
@@ -305,7 +396,7 @@ function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: bo
             {summary}
           </span>
           <ChevronDown
-            className="h-3 w-3 flex-shrink-0 transition-opacity opacity-0 group-hover:opacity-60"
+            className="h-3.5 w-3.5 flex-shrink-0 mt-[1px] transition-opacity opacity-40 group-hover:opacity-80"
             style={{ color: 'var(--color-text-muted)' }}
           />
         </button>
@@ -313,16 +404,17 @@ function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: bo
 
       {/* Expanded chain — visible during streaming or when expanded */}
       {!collapsed && (
-        <div className="space-y-0">
-          {/* Collapse button when done */}
+        <div style={cardStyle}>
+          {/* Collapse header when done */}
           {allDone && (
             <button
               onClick={() => setCollapsed(true)}
-              className="flex items-center gap-2.5 py-2 text-left w-full mb-1"
+              className="flex items-start gap-2.5 text-left w-full mb-2 pb-2"
+              style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}
             >
-              <CheckCircle2 className="h-4 w-4 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
+              <CheckCircle2 className="h-4 w-4 flex-shrink-0 mt-[1px]" style={{ color: 'var(--color-accent)' }} />
               <span
-                className="flex-1 text-xs"
+                className="flex-1 text-xs leading-5"
                 style={{
                   fontFamily: 'var(--font-data)',
                   letterSpacing: '0.02em',
@@ -332,7 +424,7 @@ function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: bo
                 {summary}
               </span>
               <ChevronDown
-                className="h-3 w-3 flex-shrink-0"
+                className="h-3.5 w-3.5 flex-shrink-0 mt-[1px]"
                 style={{ color: 'var(--color-text-muted)', transform: 'rotate(180deg)' }}
               />
             </button>
@@ -345,17 +437,18 @@ function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: bo
               initial={{ opacity: 0, x: -8 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.2 }}
-              className="flex items-center gap-2.5 py-1"
+              className="flex items-start gap-2.5 py-1"
             >
               <motion.div
+                className="flex-shrink-0 mt-[2px]"
                 initial={{ scale: 0 }}
                 animate={{ scale: 1 }}
                 transition={{ type: 'spring', stiffness: 400, damping: 15 }}
               >
-                <Check className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--color-accent)' }} />
+                <Check className="h-3.5 w-3.5" style={{ color: 'var(--color-accent)' }} />
               </motion.div>
               <span
-                className="text-xs"
+                className="text-xs leading-5"
                 style={{
                   fontFamily: 'var(--font-data)',
                   letterSpacing: '0.02em',
@@ -376,15 +469,15 @@ function ToolChain({ steps, isStreaming }: { steps: AgentStep[]; isStreaming: bo
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0 }}
                 transition={{ duration: 0.15 }}
-                className="flex items-center gap-2.5 py-1"
+                className="flex items-start gap-2.5 py-1"
               >
-                <span className="flex items-center gap-[3px] h-3.5 w-3.5 flex-shrink-0 justify-center">
+                <span className="flex items-center gap-[3px] h-3.5 w-3.5 flex-shrink-0 justify-center mt-[2px]">
                   <span className="thinking-dot h-[4px] w-[4px] rounded-full" style={{ background: 'var(--color-accent)', animationDelay: '0ms' }} />
                   <span className="thinking-dot h-[4px] w-[4px] rounded-full" style={{ background: 'var(--color-accent)', animationDelay: '150ms' }} />
                   <span className="thinking-dot h-[4px] w-[4px] rounded-full" style={{ background: 'var(--color-accent)', animationDelay: '300ms' }} />
                 </span>
                 <span
-                  className="text-xs active-step-shimmer"
+                  className="text-xs leading-5 active-step-shimmer"
                   style={{
                     fontFamily: 'var(--font-data)',
                     letterSpacing: '0.02em',

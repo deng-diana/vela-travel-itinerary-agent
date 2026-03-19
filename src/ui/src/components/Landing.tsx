@@ -211,44 +211,57 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
         <div style={{ marginTop: '48px', paddingBottom: '48px' }}>
           <form onSubmit={onSubmit}>
             <div
-              className="relative flex items-center rounded-lg"
+              className="relative flex items-end rounded-lg"
               style={{
                 background: 'var(--bg-input)',
                 border: '1px solid var(--color-border)',
-                padding: '24px',
+                padding: '16px 24px',
               }}
             >
-              {/* Custom thick blinking caret — visible when input is empty */}
-              {!input && <div className="custom-caret" />}
-              <textarea
-                ref={textareaRef}
-                className="flex-1 outline-none resize-none bg-transparent"
-                style={{
-                  color: 'var(--color-text)',
-                  fontFamily: 'var(--font-editorial)',
-                  fontSize: '1rem',
-                  minHeight: '24px',
-                  caretColor: input ? 'var(--color-accent)' : 'transparent',
-                }}
-                value={input}
-                onChange={(event) => onInputChange(event.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    e.currentTarget.form?.requestSubmit()
-                  }
-                }}
-                onBlur={() => {
-                  // Re-focus after blur to keep cursor always visible
-                  if (isInitial) {
-                    setTimeout(() => textareaRef.current?.focus(), 0)
-                  }
-                }}
-                placeholder={'"3 days in Paris, solo, love food and art, mid-range budget"'}
-                rows={1}
-              />
+              <div className="relative flex-1">
+                {/* Custom thick blinking caret — visible when input is empty */}
+                {!input && <div className="custom-caret" style={{ position: 'absolute', left: 0, top: '12px' }} />}
+                <textarea
+                  ref={textareaRef}
+                  className="w-full outline-none resize-none bg-transparent"
+                  style={{
+                    color: 'var(--color-text)',
+                    fontFamily: 'var(--font-editorial)',
+                    fontSize: '1rem',
+                    minHeight: '24px',
+                    maxHeight: '160px',
+                    overflowY: 'auto',
+                    lineHeight: '1.5',
+                    caretColor: input ? 'var(--color-accent)' : 'transparent',
+                  }}
+                  value={input}
+                  onChange={(event) => {
+                    onInputChange(event.target.value)
+                    const el = event.target
+                    el.style.height = 'auto'
+                    el.style.height = Math.min(el.scrollHeight, 160) + 'px'
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      e.currentTarget.form?.requestSubmit()
+                      if (textareaRef.current) {
+                        textareaRef.current.style.height = 'auto'
+                      }
+                    }
+                  }}
+                  onBlur={() => {
+                    // Re-focus after blur to keep cursor always visible
+                    if (isInitial) {
+                      setTimeout(() => textareaRef.current?.focus(), 0)
+                    }
+                  }}
+                  placeholder={'"3 days in Paris, solo, love food and art, mid-range budget"'}
+                  rows={1}
+                />
+              </div>
               <button
-                className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80"
+                className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80 mb-[2px]"
                 style={{
                   background: 'var(--color-accent)',
                   color: '#000000',

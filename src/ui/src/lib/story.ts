@@ -70,11 +70,14 @@ export interface HotelOption {
   short_description?: string
   why_selected?: string | null
   nearby_highlights?: string[]
+  maps_url?: string | null
 }
 
 export interface HighlightSlideData {
   hotels: HotelOption[]
   moments: HighlightMoment[]
+  trip_length_days: number
+  month: string
 }
 
 export interface DaySlideItem {
@@ -199,11 +202,11 @@ export function buildStory(
   const otherHotels = itinerary.hotels.filter(
     h => !itinerary.selected_hotel || h.name !== itinerary.selected_hotel.name
   ).slice(0, 2) // Include up to 2 alternative hotels
-  const allHotels = [...selectedHotels, ...otherHotels].slice(0, 3) // Max 3 hotels displayed
+  const allHotels = [...selectedHotels, ...otherHotels].slice(0, 2) // Max 2 hotels displayed
 
   const moments = buildHighlightMoments(itinerary, photoUrlBuilder)
 
-  if (allHotels.length > 0 || moments.length > 0) {
+  if (allHotels.length > 0) {
     slides.push({
       id: id('highlights'),
       type: 'highlights',
@@ -216,10 +219,12 @@ export function buildStory(
           nightly_rate_usd: hotel.nightly_rate_usd,
           affiliate_link: hotel.affiliate_link,
           short_description: hotel.short_description,
-          why_selected: hotel.short_description, // Use short_description for why_selected
-          nearby_highlights: hotel.key_highlights, // Use key_highlights for nearby highlights
+          why_selected: hotel.short_description,
+          maps_url: hotel.maps_url ?? null,
         })),
         moments,
+        trip_length_days: itinerary.trip_length_days ?? itinerary.days.length,
+        month: itinerary.month ?? '',
       },
     })
   }

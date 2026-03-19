@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import type { FormEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import type {
@@ -53,6 +53,9 @@ function App() {
   const [publicItinerary, setPublicItinerary] = useState<ItineraryDraft | null>(null)
   const [publicLoading, setPublicLoading] = useState(false)
   const [publicError, setPublicError] = useState<string | null>(null)
+
+  // Track destination for context-aware tool messages (ref survives SSE loop closure)
+  const destinationRef = useRef('')
 
   // Load public itinerary if ?trip= param is present
   useEffect(() => {
@@ -143,9 +146,11 @@ function App() {
     // Immediate workspace transition when backend signals readiness
     if (streamEvent.type === 'workspace_ready') {
       setWorkspaceMode(true)
-      const payload = streamEvent.payload as { planning_brief?: { destination?: string; dates_or_month?: string; trip_length_days?: number; priorities?: string[]; travel_party?: string } } | undefined
+      const payload = streamEvent.payload as { planning_brief?: { destination?: string; dates_or_month?: string; trip_length_days?: number; priorities?: string[]; travel_party?: string; budget?: string } } | undefined
       if (payload?.planning_brief) {
         const brief = payload.planning_brief
+        // Store destination in ref so tool messages can reference it in the same SSE loop
+        if (brief.destination) destinationRef.current = brief.destination
         setItinerary((current) => ({
           ...(current ?? { ...BLANK_ITINERARY }),
           destination: brief.destination ?? '',
@@ -160,7 +165,7 @@ function App() {
 
     if (streamEvent.type === 'tool_started' && streamEvent.tool_name) {
       setWorkspaceMode(true)
-      const step = makeActiveStep(streamEvent.tool_name)
+      const step = makeActiveStep(streamEvent.tool_name, destinationRef.current)
       setSteps((current) => [...current.filter((item) => item.status === 'completed'), step])
       setLiveNarration(step.detail)
       return
@@ -168,7 +173,7 @@ function App() {
 
     if (streamEvent.type === 'tool_completed' && streamEvent.tool_name) {
       setWorkspaceMode(true)
-      const completedStep = makeCompletedStep(streamEvent.tool_name)
+      const completedStep = makeCompletedStep(streamEvent.tool_name, destinationRef.current)
       setSteps((current) => {
         const withoutActive = current.filter((item) => item.status === 'completed')
         return [...withoutActive, completedStep]
@@ -212,6 +217,13 @@ function App() {
 
         return { ...next }
       })
+      return
+    }
+
+    if (streamEvent.type === 'error') {
+      setError(streamEvent.message ?? 'Something went wrong. Please try again.')
+      setLiveNarration('')
+      setIsStreaming(false)
       return
     }
 
@@ -313,71 +325,73 @@ function App() {
 // SSE helpers
 // ---------------------------------------------------------------------------
 
-function makeActiveStep(toolName: string): AgentStep {
+function makeActiveStep(toolName: string, destination: string): AgentStep {
+  const city = destination || 'destination'
   const detailByTool: Record<string, string> = {
-    analyze_preferences: 'Reading your preferences and planning the research strategy.',
-    plan_research: 'Deciding which research tools to run for this trip.',
-    get_weather: 'Checking live destination weather and turning it into practical travel context.',
-    get_hotels: 'Screening stay options that fit the trip style, neighborhood, and budget.',
-    get_restaurants: 'Curating dining options that match the traveler profile and local rhythm.',
-    get_experiences: 'Collecting experiences that add texture without breaking the pace.',
-    get_daily_structure: 'Organizing everything into a coherent day-by-day route.',
-    estimate_budget: 'Calculating a realistic budget breakdown for the trip.',
-    get_visa_requirements: 'Looking up entry requirements and visa details.',
-    get_packing_suggestions: 'Building a smart packing list based on weather and activities.',
-    verify_itinerary: 'Running quality checks — ensuring every day is complete and coherent.',
-    polish_copy: 'Rewriting descriptions for warmth, clarity, and a sense of place.',
-    write_summary: 'Crafting your final trip summary and travel tips.',
+    analyze_preferences: `Analyzing preferences and building a research plan for ${city}.`,
+    plan_research: `Selecting which data sources to query for ${city}.`,
+    get_weather: `Fetching live weather conditions in ${city}.`,
+    get_hotels: `Searching for hotels in ${city} that match the style and budget.`,
+    get_restaurants: `Finding restaurants and local dining spots in ${city}.`,
+    get_experiences: `Discovering activities, attractions, and hidden gems in ${city}.`,
+    get_daily_structure: `Organizing ${city} stops into a day-by-day route.`,
+    estimate_budget: `Calculating a per-day cost breakdown for ${city}.`,
+    get_visa_requirements: `Checking visa and entry requirements for ${city}.`,
+    get_packing_suggestions: `Building a packing list based on ${city} weather and activities.`,
+    verify_itinerary: `Running quality checks on the ${city} itinerary.`,
+    polish_copy: `Polishing descriptions for the ${city} plan.`,
+    write_summary: `Writing the final trip summary for ${city}.`,
   }
 
   return {
     id: `${toolName}-active-${Date.now()}`,
-    title: prettyToolName(toolName),
-    detail: detailByTool[toolName] ?? 'Working on the next planning step.',
+    title: prettyToolName(toolName, city),
+    detail: detailByTool[toolName] ?? `Working on the ${city} plan.`,
     status: 'active',
   }
 }
 
-function makeCompletedStep(toolName: string): AgentStep {
+function makeCompletedStep(toolName: string, destination: string): AgentStep {
+  const city = destination || 'destination'
   const completedByTool: Record<string, string> = {
     analyze_preferences: 'Preferences analyzed — research plan ready.',
     plan_research: 'Research strategy selected.',
-    get_weather: 'Live weather is now grounding the plan.',
-    get_hotels: 'Stay options have been added to the itinerary.',
-    get_restaurants: 'Dining options are now part of the plan.',
-    get_experiences: 'Experience options are ready and mapped into the trip.',
-    get_daily_structure: 'The itinerary has been organized into labeled days.',
-    estimate_budget: 'Budget breakdown is ready.',
-    get_visa_requirements: 'Entry requirements have been looked up.',
-    get_packing_suggestions: 'Packing list is ready.',
-    verify_itinerary: 'Quality verified — the plan is solid.',
-    polish_copy: 'Every description has been polished.',
-    write_summary: 'Summary and travel tips are ready.',
+    get_weather: `${city} weather data received.`,
+    get_hotels: `${city} hotel options added to the plan.`,
+    get_restaurants: `${city} dining options curated.`,
+    get_experiences: `${city} experiences and activities mapped.`,
+    get_daily_structure: `Day-by-day ${city} itinerary built.`,
+    estimate_budget: `${city} budget breakdown ready.`,
+    get_visa_requirements: `Entry requirements for ${city} checked.`,
+    get_packing_suggestions: `Packing list for ${city} ready.`,
+    verify_itinerary: `${city} itinerary quality verified.`,
+    polish_copy: `${city} descriptions polished.`,
+    write_summary: `${city} trip summary ready.`,
   }
 
   return {
     id: `${toolName}-completed-${Date.now()}`,
-    title: prettyToolName(toolName),
+    title: prettyToolName(toolName, city),
     detail: completedByTool[toolName] ?? 'Step completed.',
     status: 'completed',
   }
 }
 
-function prettyToolName(toolName: string): string {
+function prettyToolName(toolName: string, city: string): string {
   const names: Record<string, string> = {
     analyze_preferences: 'Analyzing trip preferences',
-    plan_research: 'plan_research — selecting tools to run',
-    get_weather: 'get_weather — fetching live conditions',
-    get_hotels: 'get_hotels — screening accommodation',
-    get_restaurants: 'get_restaurants — curating dining options',
-    get_experiences: 'get_experiences — collecting activities',
-    get_daily_structure: 'get_daily_structure — building day-by-day plan',
-    estimate_budget: 'estimate_budget — calculating costs',
-    get_visa_requirements: 'get_visa_requirements — checking entry rules',
-    get_packing_suggestions: 'get_packing_suggestions — building list',
-    verify_itinerary: 'verify_itinerary — quality check',
-    polish_copy: 'polish_copy — rewriting descriptions',
-    write_summary: 'write_summary — composing final reply',
+    plan_research: 'Selecting research strategy',
+    get_weather: `Fetching ${city} weather`,
+    get_hotels: `Searching ${city} hotels`,
+    get_restaurants: `Finding ${city} restaurants`,
+    get_experiences: `Discovering ${city} experiences`,
+    get_daily_structure: `Building day-by-day plan`,
+    estimate_budget: `Estimating ${city} budget`,
+    get_visa_requirements: `Checking ${city} visa rules`,
+    get_packing_suggestions: `Building packing list`,
+    verify_itinerary: 'Verifying itinerary quality',
+    polish_copy: 'Polishing descriptions',
+    write_summary: 'Writing trip summary',
   }
   return names[toolName] ?? toolName
 }

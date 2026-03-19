@@ -356,6 +356,31 @@ function TimelineNode({
             background: 'rgba(245,240,232,0.025)',
           }}
         >
+          {/* Photo — left side */}
+          {item.photo_url && (
+            <div
+              style={{
+                width: '160px',
+                minHeight: '180px',
+                flexShrink: 0,
+                overflow: 'hidden',
+                position: 'relative',
+              }}
+            >
+              <img
+                src={item.photo_url}
+                alt={item.title}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                }}
+              />
+            </div>
+          )}
+
           {/* Text */}
           <div className="flex-1 p-5 flex flex-col gap-2 min-w-0">
             <h3
@@ -442,31 +467,6 @@ function TimelineNode({
               )}
             </div>
           </div>
-
-          {/* Photo */}
-          {item.photo_url && (
-            <div
-              style={{
-                width: '160px',
-                minHeight: '180px',
-                flexShrink: 0,
-                overflow: 'hidden',
-                position: 'relative',
-              }}
-            >
-              <img
-                src={item.photo_url}
-                alt={item.title}
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                }}
-              />
-            </div>
-          )}
         </div>
       </div>
     </motion.div>
