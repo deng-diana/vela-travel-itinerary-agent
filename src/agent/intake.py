@@ -51,7 +51,7 @@ def extract_brief_patch(
         "Rules:\n"
         "- destination: the TARGET city/country of the trip. If the user says 'from London to Paris', "
         "destination is Paris (not London, not 'London to Paris'). Extract only the destination city/country.\n"
-        "- Map budget to one of: budget, mid, luxury. '£1000' or '$1500' for a few days → mid.\n"
+        "- Map budget to one of: budget, mid, luxury. Compute daily rate using trip_length_days from the existing brief (or estimate 3 days if unknown). <$120/day → budget; $120–400/day → mid; >$400/day → luxury. Example: '$1500 total for 3 days' = $500/day → luxury.\n"
         "- Map pace to one of: slow, balanced, packed.\n"
         "- priorities/style_notes/must_do/must_avoid/dietary_preferences/constraints are arrays when present.\n"
         "- Set constraints_confirmed=true if the user explicitly says there are no special restrictions.\n"
@@ -250,18 +250,25 @@ def _generate_clarifying_reply_with_claude(
             model=model,
             max_tokens=500,
             system=(
-                "You write a warm, conversational clarifying message for a travel-planning assistant.\n"
-                "Reply in plain text only. Reply in the same language the user is writing in.\n"
-                "Rules:\n"
-                "- Ask about the MISSING fields listed below, using the provided guidance and example options.\n"
-                "- Group related fields together naturally (e.g., budget + accommodation, travel party + priorities).\n"
-                "- Include specific options/examples from the guidance so the user can pick easily.\n"
-                "- Do NOT repeat any information the user already gave — acknowledge what you know.\n"
-                "- Sound warm, casual, and enthusiastic about planning their trip.\n"
-                "- Keep it concise but include enough detail for the user to answer easily.\n"
-                "- If only 1-2 fields are missing, keep it very short (1-2 sentences).\n"
-                "- If many fields are missing, group them into 2-3 natural questions.\n"
-                "- Make it clear you need these details before you can start building the itinerary.\n"
+                "You write a concise clarifying message for a travel-planning assistant.\n"
+                "Reply in the same language the user is writing in.\n"
+                "FORMAT — follow this structure exactly:\n"
+                "1. One short sentence acknowledging what you already know (max 15 words). No exclamation marks.\n"
+                "2. A brief transition like 'Just need a few more details:' or 'One quick thing:'\n"
+                "3. Each missing field on its own line, starting with a dash (—). "
+                "Include concrete options in parentheses so the user can pick easily.\n"
+                "4. Do NOT add a closing sentence like 'Once you answer...' or 'Let me know...'. "
+                "End after the last field line.\n\n"
+                "RULES:\n"
+                "- Do NOT repeat back information the user already gave.\n"
+                "- Do NOT use exclamation marks or overly enthusiastic language.\n"
+                "- Each field line should be self-contained and scannable.\n"
+                "- If only 1 field is missing, skip the dash format — just ask in one natural sentence.\n\n"
+                "EXAMPLE (2 fields missing):\n"
+                "Got it — 3 days in Paris as a couple, mid-range budget.\n\n"
+                "Just need two more details:\n"
+                "— Accommodation preference (boutique hotel / Airbnb / hostel)\n"
+                "— Any dietary needs (vegetarian, halal, gluten-free, or none)\n"
             ),
             messages=[
                 {
@@ -293,34 +300,39 @@ def _generate_clarifying_reply_with_claude(
 
 
 def _build_clarifying_reply_fallback(brief: PlanningBrief, missing: list[str]) -> str:
-    parts: list[str] = []
-    if "destination" in missing:
-        parts.append("which city or region you'd like to visit")
-    if "trip_length_days" in missing:
-        parts.append("how many days you have")
-    if "dates_or_month" in missing:
-        parts.append("when you're planning to go (dates or month)")
-    if "travel_party" in missing:
-        parts.append("who's coming along (solo / couple / family / friends)")
-    if "budget" in missing:
-        parts.append("your budget style (budget / mid-range / luxury)")
-    if "priorities" in missing:
-        parts.append("what matters most — food, culture, nature, shopping, nightlife, adventure, relaxation")
-    if "dietary_preferences" in missing:
-        parts.append("any dietary needs (vegetarian, vegan, halal, gluten-free, or no restrictions)")
-    if "hotel_preference" in missing:
-        parts.append("your accommodation preference (boutique hotel / resort / Airbnb / hostel / 5-star / traditional)")
+    field_lines: dict[str, str] = {
+        "destination": "— Destination (which city or region)",
+        "trip_length_days": "— Trip length (how many days)",
+        "dates_or_month": "— When you're going (dates or month)",
+        "travel_party": "— Who's coming (solo / couple / family / friends)",
+        "budget": "— Budget style (budget / mid-range / luxury)",
+        "priorities": "— Interests (food, culture, nature, shopping, nightlife, art, adventure)",
+        "dietary_preferences": "— Dietary needs (vegetarian, halal, gluten-free, or none)",
+        "hotel_preference": "— Stay preference (boutique hotel / Airbnb / hostel / resort)",
+    }
 
-    if not parts:
-        return "I have enough to get started — building your itinerary now!"
+    lines = [field_lines[f] for f in missing if f in field_lines]
 
-    if len(parts) == 1:
-        return f"Almost there! I just need to know {parts[0]}, and I'll start building your itinerary."
-    if len(parts) == 2:
-        joined = " and ".join(parts)
-        return f"I'm almost ready to start planning! Just need to know {joined}."
-    joined = ", ".join(parts[:-1]) + f", and {parts[-1]}"
-    return f"I'd love to start planning! To build the perfect itinerary, I need a few more details: {joined}."
+    if not lines:
+        return "I have enough to get started — building your itinerary now."
+
+    # Build a brief acknowledgement of what we already know
+    known_parts: list[str] = []
+    if brief.destination:
+        known_parts.append(brief.destination)
+    if brief.trip_length_days:
+        known_parts.append(f"{brief.trip_length_days} days")
+    if brief.travel_party:
+        known_parts.append(brief.travel_party)
+
+    if len(lines) == 1:
+        ack = f"Got it — {', '.join(known_parts)}." if known_parts else "Almost there."
+        field_desc = lines[0].lstrip("— ")
+        return f"{ack} Just need to know: {field_desc.lower()}."
+
+    ack = f"Got it — {', '.join(known_parts)}." if known_parts else "Thanks for sharing."
+    header = "Just need a few more details:" if len(lines) > 2 else "Just need two more details:"
+    return f"{ack}\n\n{header}\n" + "\n".join(lines)
 
 
 

@@ -145,8 +145,17 @@ class AgentOrchestrator:
         )
 
         # Skip preface message — jump straight into research steps
+        has_existing = state.last_itinerary is not None
         yield AgentEvent(type="tool_started", tool_name="analyze_preferences", message="Analyzing your preferences")
-        yield AgentEvent(type="tool_completed", tool_name="analyze_preferences", payload={"message": "Preferences analyzed"})
+        yield AgentEvent(
+            type="tool_completed",
+            tool_name="analyze_preferences",
+            payload={
+                "message": "Preferences analyzed",
+                "changed_fields": sorted(changed_fields),
+                "is_rerun": has_existing,
+            },
+        )
 
         # Show "planning research" as active while Claude decides which tools to call
         yield AgentEvent(type="tool_started", tool_name="plan_research", message="Planning research strategy")
@@ -254,6 +263,7 @@ class AgentOrchestrator:
         Falls back to deterministic build_tool_plan if the loop fails entirely.
         """
         tool_payloads.update(dict(payloads_from_previous(previous)))
+        has_existing_plan = previous is not None
 
         # ── Code-level gate: compute which tools are ALLOWED ──────────
         # This enforces selective rerun at the code level, not just via prompt.
@@ -275,7 +285,6 @@ class AgentOrchestrator:
             allowed_tools = None
 
         gather_tools = get_claude_tools(names=GATHER_TOOL_NAMES)
-        has_existing_plan = previous is not None
 
         context: dict[str, Any] = {
             "planning_brief": brief.model_dump(mode="json"),
