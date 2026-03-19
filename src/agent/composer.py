@@ -6,6 +6,7 @@ repair loop, copy polish, and itinerary building.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -26,6 +27,7 @@ from src.tools.schemas import (
     WeatherSummary,
 )
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Public functions
@@ -331,7 +333,7 @@ def build_itinerary(
         try:
             budget_estimate = BudgetEstimate.model_validate(tool_payloads["estimate_budget"])
         except Exception:
-            pass
+            logger.warning("Failed to parse budget estimate payload, skipping")
     if budget_estimate is None and previous:
         budget_estimate = previous.budget_estimate
 
@@ -340,7 +342,7 @@ def build_itinerary(
         try:
             visa_requirements = VisaRequirements.model_validate(tool_payloads["get_visa_requirements"])
         except Exception:
-            pass
+            logger.warning("Failed to parse visa requirements payload, skipping")
     if visa_requirements is None and previous:
         visa_requirements = previous.visa_requirements
 
@@ -349,7 +351,7 @@ def build_itinerary(
         try:
             packing_suggestions = PackingSuggestions.model_validate(tool_payloads["get_packing_suggestions"])
         except Exception:
-            pass
+            logger.warning("Failed to parse packing suggestions payload, skipping")
     if packing_suggestions is None and previous:
         packing_suggestions = previous.packing_suggestions
 

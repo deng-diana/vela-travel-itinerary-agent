@@ -2,6 +2,12 @@
 
 Vela is an AI-powered travel itinerary agent built for the Affinity Labs assessment. It turns a conversational trip request into a structured, day-by-day itinerary that builds live in a split-panel UI while the agent works.
 
+## Demo
+
+[![Watch the demo](https://img.shields.io/badge/▶_Watch_Demo-YouTube-red?style=for-the-badge&logo=youtube)](https://youtu.be/VyTMqK1Nlpc)
+
+A full conversation from initial request to complete itinerary, including a mid-conversation preference change.
+
 ## What It Does
 
 A traveller opens Vela, describes a trip in natural language, and watches the itinerary assemble in real time:

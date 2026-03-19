@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import httpx
@@ -12,6 +13,7 @@ from src.api.dependencies import get_orchestrator, get_session_store, get_settin
 from src.api.models import ChatRequest, ChatResponse, PublishRequest, PublishResponse, PlanSnapshot
 from src.api.publish_store import get_plan, publish_plan
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Vela API",
@@ -96,8 +98,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 for event in orchestrator.stream(state=state, user_message=request.message):
                     yield _format_sse(event.type, event.model_dump(mode="json"))
             except Exception as exc:
-                import traceback
-                traceback.print_exc()
+                logger.exception("Stream error")
                 error_event = {
                     "type": "error",
                     "message": f"Server error: {exc}",

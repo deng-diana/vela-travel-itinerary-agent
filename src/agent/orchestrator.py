@@ -193,12 +193,10 @@ class AgentOrchestrator:
         if itinerary and patch.day_swap_request:
             itinerary = apply_day_swap_request(itinerary, patch.day_swap_request)
 
-        # ── Phase 7: Verify & Repair loop (SKIPPED FOR FASTER DEMO) ────────────────────────────
-        # These steps are commented out for demo speed. Uncomment for production quality checks.
-        # if itinerary:
-        #     verification = verify_itinerary_quality(...)
-        #     if not verification["approved"]:
-        #         repaired_days = repair_daily_structure_with_claude(...)
+        # ── Phase 7: Verify & Repair loop ─────────────────────────────
+        # Planned: score itinerary against a coverage/coherence rubric and
+        # trigger a Claude-led repair cycle for issues above threshold.
+        # Deferred to keep response latency under ~15 s for the demo.
 
         # ── Phase 9: Final reply + story metadata ─────────────────────
         yield AgentEvent(type="tool_started", tool_name="write_summary", message="Writing your trip summary")
