@@ -22,11 +22,11 @@ function generateWeatherTips(
   const tips: WeatherTip[] = []
   const s = summary.toLowerCase()
 
-  // Umbrella / rain
+  // Umbrella / rain — show for any measurable rainfall
   if (rainfall != null && rainfall > 5) {
     tips.push({ icon: '☂️', label: 'Bring an umbrella — expect rainy spells', highlight: true })
-  } else if (s.includes('rain') || s.includes('shower')) {
-    tips.push({ icon: '☂️', label: 'Pack a compact umbrella, just in case', highlight: true })
+  } else if ((rainfall != null && rainfall > 0) || s.includes('rain') || s.includes('shower')) {
+    tips.push({ icon: '☂️', label: 'Pack a compact umbrella, just in case' })
   }
 
   // Temperature-based clothing
@@ -65,9 +65,16 @@ function generateWeatherTips(
     tips.push({ icon: '❄️', label: 'Waterproof boots for snowy conditions', highlight: true })
   }
 
-  // Ensure at least 3 tips
+  // Ensure at least 3 tips — avoid duplicating shoe tip
   if (tips.length < 3) {
-    tips.push({ icon: '👟', label: 'Comfortable walking shoes for exploring' })
+    const hasShoes = tips.some((t) => t.label.toLowerCase().includes('shoe') || t.label.toLowerCase().includes('walking'))
+    if (!hasShoes) {
+      tips.push({ icon: '👟', label: 'Comfortable walking shoes for exploring' })
+    } else if (rainfall != null && rainfall > 0) {
+      tips.push({ icon: '☂️', label: 'Pack a compact umbrella, just in case' })
+    } else {
+      tips.push({ icon: '🎒', label: 'Pack light — cobblestones ahead' })
+    }
   }
 
   return tips.slice(0, 4)

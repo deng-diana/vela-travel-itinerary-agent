@@ -17,7 +17,7 @@ type LandingProps = {
 }
 
 const WELCOME_MESSAGE =
-  "Hi, I'm **Vela** — your travel planning companion.\n\nShare your destination, dates, trip length, who's traveling, budget, and the kind of trip you want. I'll start building an itinerary that fits."
+  "Hi, I'm **Vela** — your travel planning companion.\n\nTell me about your trip and I'll build a personalized itinerary. Here's what helps:\n\n— **Where** you're going and **when**\n— **How long** and **who's** coming\n— **Budget** style (budget / mid-range / luxury)\n— **Interests** — food, art, nightlife, nature, anything\n— **Dietary** needs and **stay** preference (hotel, hostel, Airbnb)\n\nShare as much as you'd like — I'll ask about anything I still need."
 
 export function Landing({ messages, input, isStreaming, liveNarration, error, onInputChange, onSubmit }: LandingProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -27,6 +27,13 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, liveNarration, isStreaming])
+
+  // Reset textarea height when input is cleared
+  useEffect(() => {
+    if (!input && textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+    }
+  }, [input])
 
   // Always keep textarea focused so cursor is visible
   useEffect(() => {
@@ -123,7 +130,7 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
               border: '1px solid var(--color-border)',
               color: 'var(--color-text)',
               padding: '20px',
-              marginTop: '48px',
+              marginTop: '36px',
             }}
           >
             <div className="flex-shrink-0 mt-0.5">
@@ -138,42 +145,39 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
         {/* Conversation messages */}
         {messages.length > 0 && (
           <div className="flex flex-col gap-6">
-            {messages.map((message, index) => (
-              <article
-                key={`landing-${message.role}-${index}`}
-                className={`rounded-lg text-sm leading-7 ${
-                  message.role === 'user'
-                    ? 'ml-6'
-                    : 'mr-6 flex gap-3'
-                }`}
-                style={
-                  message.role === 'user'
-                    ? {
-                        background: 'var(--bg-user)',
-                        color: 'var(--color-text)',
-                        padding: '16px',
-                      }
-                    : {
-                        border: '1px solid var(--color-border)',
-                        color: 'var(--color-text)',
-                        padding: '20px',
-                      }
-                }
-              >
-                {message.role === 'user' ? (
-                  <div className="whitespace-pre-line">{message.text}</div>
-                ) : (
-                  <>
-                    <div className="flex-shrink-0 mt-0.5">
-                      <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <MarkdownMessage text={message.text} />
-                    </div>
-                  </>
-                )}
-              </article>
-            ))}
+            {messages.map((message, index) =>
+              message.role === 'user' ? (
+                <div key={`landing-user-${index}`} className="flex justify-end mb-4">
+                  <article
+                    className="rounded-lg text-sm leading-7 max-w-[85%]"
+                    style={{
+                      background: 'var(--bg-user)',
+                      color: 'var(--color-text)',
+                      padding: '12px 16px',
+                    }}
+                  >
+                    <div className="whitespace-pre-line">{message.text}</div>
+                  </article>
+                </div>
+              ) : (
+                <article
+                  key={`landing-assistant-${index}`}
+                  className="rounded-lg text-sm leading-7 mb-4 flex gap-3"
+                  style={{
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text)',
+                    padding: '20px',
+                  }}
+                >
+                  <div className="flex-shrink-0 mt-0.5">
+                    <img src="/vela-avatar.svg" alt="Vela" width={24} height={24} style={{ borderRadius: '50%' }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <MarkdownMessage text={message.text} />
+                  </div>
+                </article>
+              )
+            )}
 
             {/* Live narration */}
             {liveNarration && (
@@ -207,32 +211,29 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
           </div>
         )}
 
-        {/* Input — 48px below onboarding/messages */}
-        <div style={{ marginTop: '48px', paddingBottom: '48px' }}>
+        {/* Input — 36px below onboarding/messages */}
+        <div style={{ marginTop: '36px', paddingBottom: '48px' }}>
           <form onSubmit={onSubmit}>
             <div
-              className="relative flex items-end rounded-lg"
+              className="flex rounded-lg overflow-hidden"
               style={{
                 background: 'var(--bg-input)',
                 border: '1px solid var(--color-border)',
-                padding: '16px 24px',
               }}
             >
-              <div className="relative flex-1">
-                {/* Custom thick blinking caret — visible when input is empty */}
-                {!input && <div className="custom-caret" style={{ position: 'absolute', left: 0, top: '12px' }} />}
-                <textarea
+              <textarea
                   ref={textareaRef}
-                  className="w-full outline-none resize-none bg-transparent"
+                  className="flex-1 outline-none resize-none bg-transparent"
                   style={{
                     color: 'var(--color-text)',
                     fontFamily: 'var(--font-editorial)',
                     fontSize: '1rem',
-                    minHeight: '24px',
+                    lineHeight: '1.5rem',
+                    minHeight: '52px',
                     maxHeight: '160px',
                     overflowY: 'auto',
-                    lineHeight: '1.5',
-                    caretColor: input ? 'var(--color-accent)' : 'transparent',
+                    padding: '14px 0 14px 24px',
+                    caretColor: 'var(--color-accent)',
                   }}
                   value={input}
                   onChange={(event) => {
@@ -256,12 +257,13 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
                       setTimeout(() => textareaRef.current?.focus(), 0)
                     }
                   }}
-                  placeholder={'"3 days in Paris, solo, love food and art, mid-range budget"'}
+                  placeholder={messages.length > 0 ? 'Add details, change preferences, or ask a question...' : 'Describe your dream trip...'}
                   rows={1}
                 />
-              </div>
+              {/* Button wrapper centers button vertically when textarea expands */}
+              <div className="flex items-end pb-[10px] pr-4 flex-shrink-0">
               <button
-                className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80 mb-[2px]"
+                className="flex-shrink-0 h-9 w-9 rounded-full flex items-center justify-center transition-opacity hover:opacity-80"
                 style={{
                   background: 'var(--color-accent)',
                   color: '#000000',
@@ -275,6 +277,7 @@ export function Landing({ messages, input, isStreaming, liveNarration, error, on
               >
                 <ArrowUp size={18} strokeWidth={2.5} />
               </button>
+              </div>
             </div>
           </form>
         </div>

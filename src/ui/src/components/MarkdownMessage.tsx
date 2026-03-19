@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 export function MarkdownMessage({ text }: { text: string }) {
   const blocks = text
@@ -74,22 +74,13 @@ function renderInlineMarkdown(text: string) {
       const linkMatch = part.match(/\[(.*?)\]\((.*?)\)/)
       if (linkMatch) {
         const [, linkText, url] = linkMatch
-        const handleClick = (e: React.MouseEvent) => {
-          e.preventDefault()
-          if (url === '#scroll-to-top') {
-            // Scroll the messages area to top
-            const messagesArea = document.querySelector('.messages-area')
-            if (messagesArea) {
-              messagesArea.scrollTo({ top: 0, behavior: 'smooth' })
-            }
-          } else {
-            window.location.href = url
-          }
+        if (url === '#scroll-to-top') {
+          return <ViewPlanLink key={`link-${index}`} text={linkText} />
         }
         return (
           <a
             key={`link-${index}`}
-            onClick={handleClick}
+            onClick={(e) => { e.preventDefault(); window.location.href = url }}
             href={url}
             className="cursor-pointer transition-opacity hover:opacity-80"
             style={{ color: 'var(--color-accent)', textDecoration: 'underline' }}
@@ -101,6 +92,60 @@ function renderInlineMarkdown(text: string) {
     }
     return <InlineText key={`text-${index}`}>{part}</InlineText>
   })
+}
+
+/** "View itinerary plan →" button that scrolls the right story panel to top with a click animation */
+function ViewPlanLink({ text }: { text: string }) {
+  const [clicked, setClicked] = useState(false)
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault()
+
+    // Scroll right panel to top
+    const storyScroll = document.querySelector('[data-story-scroll]')
+    if (storyScroll) {
+      storyScroll.scrollTo({ top: 0, behavior: 'smooth' })
+    }
+
+    // Trigger click animation
+    setClicked(true)
+    setTimeout(() => setClicked(false), 600)
+  }
+
+  return (
+    <a
+      onClick={handleClick}
+      href="#scroll-to-top"
+      className="inline-flex items-center gap-1.5 cursor-pointer transition-all duration-200 hover:opacity-80"
+      style={{
+        color: 'var(--color-accent)',
+        textDecoration: 'none',
+        fontWeight: 500,
+        transform: clicked ? 'scale(0.96)' : 'scale(1)',
+        opacity: clicked ? 0.6 : 1,
+        transition: 'transform 0.3s cubic-bezier(0.22,1,0.36,1), opacity 0.3s ease',
+      }}
+    >
+      <span style={{ textDecoration: 'underline', textUnderlineOffset: '3px' }}>{text}</span>
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={{
+          transform: clicked ? 'translateX(3px)' : 'translateX(0)',
+          transition: 'transform 0.3s cubic-bezier(0.22,1,0.36,1)',
+        }}
+      >
+        <path d="M5 12h14" />
+        <path d="m12 5 7 7-7 7" />
+      </svg>
+    </a>
+  )
 }
 
 function InlineText({ children }: { children: ReactNode }) {
