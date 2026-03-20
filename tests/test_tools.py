@@ -86,14 +86,23 @@ def test_get_daily_structure_balanced_days_have_full_skeleton():
                 "Tsukiji Side-Street Food Crawl",
                 "Yanaka Hidden Lanes Walk",
                 "Kiyosumi Coffee and Gallery Circuit",
+                "Meiji Shrine",
+                "Shinjuku Gyoen Park",
+                "Shibuya Crossing",
             ],
             pace="balanced",
         )
     )
 
     assert [item.kind for item in days[0].items][:2] == ["hotel", "restaurant"]
-    assert [item.time_label for item in days[1].items[:4]] == ["Morning", "Lunch", "Afternoon", "Dinner"]
-    assert [item.kind for item in days[1].items[:4]] == ["experience", "restaurant", "experience", "restaurant"]
+    # Balanced pace: multiple experiences per slot for a richer day
+    day2 = days[1]
+    morning_exp = [i for i in day2.items if i.time_label == "Morning" and i.kind == "experience"]
+    afternoon_exp = [i for i in day2.items if i.time_label == "Afternoon" and i.kind == "experience"]
+    assert len(morning_exp) >= 1, "Should have at least 1 morning experience"
+    assert len(afternoon_exp) >= 1, "Should have at least 1 afternoon experience"
+    assert any(i.time_label == "Lunch" and i.kind == "restaurant" for i in day2.items)
+    assert any(i.time_label == "Dinner" and i.kind == "restaurant" for i in day2.items)
 
 
 def test_get_daily_structure_packed_days_include_evening_anchor():

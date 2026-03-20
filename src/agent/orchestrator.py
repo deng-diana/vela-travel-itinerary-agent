@@ -168,7 +168,9 @@ class AgentOrchestrator:
             yield event
 
         # ── Phase 5: Compose daily structure ─────────────────────────
+        yield AgentEvent(type="tool_started", tool_name="rank_candidates", message="Ranking venues and planning geography")
         planning_context = prepare_candidate_context(brief, tool_payloads, state.last_itinerary)
+        yield AgentEvent(type="tool_completed", tool_name="rank_candidates", payload={"message": "Candidates ranked"})
         daily_input = build_daily_structure_input(
             brief, tool_payloads, state.last_itinerary,
             patch.day_swap_request, planning_context,

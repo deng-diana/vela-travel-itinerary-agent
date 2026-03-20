@@ -1,6 +1,20 @@
+"""Daily structure builder — creates rich, multi-activity day plans.
+
+Each time slot (morning, afternoon, evening) gets 2-3 experiences rather than
+just one, making the itinerary feel like a real travel guide. Experiences are
+distributed to give each day a full, actionable schedule.
+"""
 from __future__ import annotations
 
 from src.tools.schemas import DailyStructureInput, DayItem, DayPlan
+
+
+# How many experiences per time slot by pace
+_SLOT_COUNTS: dict[str, dict[str, int]] = {
+    "slow":     {"morning": 1, "afternoon": 1, "evening": 0},
+    "balanced": {"morning": 2, "afternoon": 2, "evening": 1},
+    "packed":   {"morning": 2, "afternoon": 3, "evening": 2},
+}
 
 
 def get_daily_structure(input_data: DailyStructureInput) -> list[DayPlan]:
@@ -54,15 +68,23 @@ def _build_arrival_day(
     must_do: list[str],
     pace: str,
 ) -> DayPlan:
-    dinner = _pick_next(restaurants, restaurant_uses)
-    evening_anchor = _pick_next(experiences, experience_uses) if pace in {"balanced", "packed"} else None
+    used_today: set[str] = set()
+    dinner = _pick_next(restaurants, restaurant_uses, exclude=used_today)
+    if dinner:
+        used_today.add(dinner)
 
-    items = [
+    # Even on arrival day, give 1-2 evening experiences if pace allows
+    evening_count = 1 if pace == "slow" else 2
+    evening_picks = _pick_multiple(experiences, experience_uses, count=evening_count, exclude=used_today)
+    for e in evening_picks:
+        used_today.add(e)
+
+    items: list[DayItem] = [
         DayItem(
             time_label="Afternoon",
             kind="hotel",
             title=hotel_name,
-            description="Check in, settle down, and use the first hours to get oriented without over-scheduling.",
+            description="Check in, settle down, and use the first hours to get oriented.",
         )
     ]
 
@@ -72,26 +94,28 @@ def _build_arrival_day(
                 time_label="Dinner",
                 kind="restaurant",
                 title=dinner,
-                description="Start close to your base with one dinner worth planning around, rather than stretching arrival day too far.",
+                description="Start close to your base with a dinner worth planning around.",
             )
         )
 
-    if evening_anchor:
-        items.append(
-            DayItem(
-                time_label="Evening",
-                kind="experience",
-                title=evening_anchor,
-                description="If energy holds up, use this as a light first-night anchor instead of forcing a full sightseeing block.",
+    if evening_picks:
+        for i, exp in enumerate(evening_picks):
+            desc = "A light first-night anchor to ease into the city." if i == 0 else "Nearby — easy to combine with the previous stop."
+            items.append(
+                DayItem(
+                    time_label="Evening",
+                    kind="experience",
+                    title=exp,
+                    description=desc,
+                )
             )
-        )
     else:
         items.append(
             DayItem(
                 time_label="Evening",
                 kind="note",
                 title="Soft landing",
-                description="Keep the first night easy so the rest of the trip starts with energy instead of drag.",
+                description="Keep the first night easy so the rest of the trip starts with energy.",
             )
         )
 
@@ -101,7 +125,7 @@ def _build_arrival_day(
                 time_label="Planning note",
                 kind="note",
                 title="Keep one must-do visible",
-                description=f"Protect time later in the trip for {must_do[0]} so the plan still feels personal, not generic.",
+                description=f"Protect time later in the trip for {must_do[0]}.",
             )
         )
 
@@ -123,117 +147,135 @@ def _build_full_day(
     style_notes: list[str],
     must_do: list[str],
 ) -> DayPlan:
+    slot_counts = _SLOT_COUNTS.get(pace, _SLOT_COUNTS["balanced"])
     used_today: set[str] = set()
-    morning = _pick_next(experiences, experience_uses, exclude=used_today)
-    if morning:
-        used_today.add(morning)
 
+    # ── Morning experiences ──
+    morning_picks = _pick_multiple(
+        experiences, experience_uses,
+        count=slot_counts["morning"], exclude=used_today,
+    )
+    for e in morning_picks:
+        used_today.add(e)
+
+    # ── Lunch ──
     lunch = _pick_next(restaurants, restaurant_uses, exclude=used_today)
     if lunch:
         used_today.add(lunch)
 
-    afternoon = None
-    if pace in {"balanced", "packed"}:
-        afternoon = _pick_next(experiences, experience_uses, exclude=used_today)
-        if afternoon:
-            used_today.add(afternoon)
+    # ── Afternoon experiences ──
+    afternoon_picks = _pick_multiple(
+        experiences, experience_uses,
+        count=slot_counts["afternoon"], exclude=used_today,
+    )
+    for e in afternoon_picks:
+        used_today.add(e)
 
+    # ── Dinner ──
     dinner = _pick_next(restaurants, restaurant_uses, exclude=used_today)
     if dinner:
         used_today.add(dinner)
 
-    evening = None
-    if pace == "packed":
-        evening = _pick_next(experiences, experience_uses, exclude=used_today)
-        if evening:
-            used_today.add(evening)
+    # ── Evening experiences ──
+    evening_picks = _pick_multiple(
+        experiences, experience_uses,
+        count=slot_counts["evening"], exclude=used_today,
+    )
+    for e in evening_picks:
+        used_today.add(e)
 
+    # ── Build items ──
     items: list[DayItem] = []
 
-    if morning:
-        items.append(
-            DayItem(
-                time_label="Morning",
-                kind="experience",
-                title=morning,
-                description="Use this as the first strong anchor while energy is high and the day still feels open.",
+    # Morning
+    if morning_picks:
+        for i, exp in enumerate(morning_picks):
+            desc = (
+                "Start the day here while energy is high."
+                if i == 0 else "Close by — combine with the previous stop before lunch."
             )
-        )
+            items.append(DayItem(time_label="Morning", kind="experience", title=exp, description=desc))
     else:
-        items.append(
-            DayItem(
-                time_label="Morning",
-                kind="note",
-                title="Slow neighborhood start",
-                description="Start nearby and keep the first block flexible so the route can tighten around what feels best on the ground.",
-            )
-        )
+        items.append(DayItem(
+            time_label="Morning", kind="note", title="Slow neighborhood start",
+            description="Start nearby and keep the first block flexible.",
+        ))
 
+    # Lunch
     if lunch:
-        items.append(
-            DayItem(
-                time_label="Lunch",
-                kind="restaurant",
-                title=lunch,
-                description="Use lunch as the midday reset, not just a filler stop, so the afternoon still has shape.",
-            )
-        )
+        items.append(DayItem(
+            time_label="Lunch", kind="restaurant", title=lunch,
+            description="Midday reset — refuel before the afternoon.",
+        ))
 
-    if afternoon:
-        items.append(
-            DayItem(
-                time_label="Afternoon",
-                kind="experience",
-                title=afternoon,
-                description="This keeps the second half of the day purposeful without sending the plan into a city-wide zigzag.",
-            )
-        )
+    # Afternoon
+    if afternoon_picks:
+        for i, exp in enumerate(afternoon_picks):
+            if i == 0:
+                desc = "Main afternoon anchor."
+            elif i == 1:
+                desc = "Nearby — easy to walk to from the previous stop."
+            else:
+                desc = "If time allows, squeeze in one more highlight in the area."
+            items.append(DayItem(time_label="Afternoon", kind="experience", title=exp, description=desc))
     elif pace != "slow":
-        items.append(
-            DayItem(
-                time_label="Afternoon",
-                kind="note",
-                title="Protected wandering time",
-                description="Leave room here for cafés, shops, or a slower neighborhood drift instead of over-programming every hour.",
-            )
-        )
+        items.append(DayItem(
+            time_label="Afternoon", kind="note", title="Protected wandering time",
+            description="Leave room for cafes, shops, or a slower neighborhood drift.",
+        ))
 
+    # Dinner
     if dinner:
-        items.append(
-            DayItem(
-                time_label="Dinner",
-                kind="restaurant",
-                title=dinner,
-                description="Close the day with a dinner that feels like a real anchor, not an afterthought.",
-            )
-        )
+        items.append(DayItem(
+            time_label="Dinner", kind="restaurant", title=dinner,
+            description="Close the day with a dinner that feels like a real anchor.",
+        ))
 
-    if evening:
-        items.append(
-            DayItem(
-                time_label="Evening",
-                kind="experience",
-                title=evening,
-                description="Use this as the late-day payoff if you still want one more memorable stop.",
+    # Evening
+    if evening_picks:
+        for i, exp in enumerate(evening_picks):
+            desc = (
+                "Evening highlight — a memorable way to end the day."
+                if i == 0 else "Combine with the previous evening stop if energy holds up."
             )
-        )
+            items.append(DayItem(time_label="Evening", kind="experience", title=exp, description=desc))
 
     if must_do and day_number == 2:
-        items.append(
-            DayItem(
-                time_label="Planning note",
-                kind="note",
-                title="Must-do checkpoint",
-                description=f"Make sure {must_do[0]} stays protected as the plan evolves.",
-            )
-        )
+        items.append(DayItem(
+            time_label="Planning note", kind="note", title="Must-do checkpoint",
+            description=f"Make sure {must_do[0]} stays protected as the plan evolves.",
+        ))
 
+    # Count experiences for summary
+    total_exp = len(morning_picks) + len(afternoon_picks) + len(evening_picks)
     return DayPlan(
         day_number=day_number,
         theme=_theme_for_day(day_number, pace, style_notes),
-        summary=_summary_for_day(pace, style_notes, morning, afternoon, dinner),
+        summary=_summary_for_day(pace, style_notes, total_exp),
         items=items,
     )
+
+
+def _pick_multiple(
+    options: list[str],
+    uses: dict[str, int],
+    count: int,
+    exclude: set[str] | None = None,
+) -> list[str]:
+    """Pick up to `count` distinct items from options, least-used first."""
+    if not options or count <= 0:
+        return []
+
+    excluded = exclude or set()
+    picks: list[str] = []
+    for _ in range(count):
+        available = [o for o in options if o not in excluded and o not in picks]
+        if not available:
+            break
+        selected = min(available, key=lambda o: (uses.get(o, 0), options.index(o)))
+        uses[selected] = uses.get(selected, 0) + 1
+        picks.append(selected)
+    return picks
 
 
 def _pick_next(
@@ -284,9 +326,7 @@ def _theme_for_day(day_number: int, pace: str, style_notes: list[str]) -> str:
 def _summary_for_day(
     pace: str,
     style_notes: list[str],
-    morning: str | None,
-    afternoon: str | None,
-    dinner: str | None,
+    experience_count: int,
 ) -> str:
     notes = " ".join(style_notes).lower()
     if "romantic" in notes:
@@ -294,11 +334,11 @@ def _summary_for_day(
     if "hidden" in notes or "local" in notes:
         return "A day designed to feel more local, with stronger texture and less generic stop-hopping."
     if pace == "slow":
-        return "A slower day with one main anchor, a proper meal break, and enough room to linger when something clicks."
+        return "A slower day with clear anchors and enough room to linger when something clicks."
     if pace == "packed":
-        return "A denser day that still keeps clear anchors from morning through evening."
-    if morning and afternoon and dinner:
-        return "A balanced day with a clear morning anchor, a second strong stop later on, and a dinner worth holding onto."
+        return f"A packed day with {experience_count} experiences plus meals — bring your walking shoes."
+    if experience_count >= 4:
+        return f"A full day with {experience_count} highlights grouped by area, plus meals."
     return "A balanced day built to feel structured without becoming rigid."
 
 

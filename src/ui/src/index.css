@@ -209,7 +209,7 @@ article {
 
 /* Thinking dots bounce animation */
 .thinking-dot {
-  animation: thinking-bounce 1.2s ease-in-out infinite;
+  animation: thinking-bounce 0.8s ease-in-out infinite;
 }
 
 @keyframes shimmer-progress {
@@ -232,10 +232,10 @@ article {
   60%,
   100% {
     transform: translateY(0);
-    opacity: 0.4;
+    opacity: 0.35;
   }
   30% {
-    transform: translateY(-6px);
+    transform: translateY(-4px);
     opacity: 1;
   }
 }
