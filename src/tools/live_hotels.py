@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 from src.tools.mock_data import get_hotels as get_mock_hotels
 from src.tools.schemas import BudgetTier, HotelOption, HotelSearchInput
@@ -27,7 +30,8 @@ def get_hotels(input_data: HotelSearchInput) -> list[HotelOption]:
         hotels = [map_place_to_hotel(place, input_data) for place in places]
         hotels = [hotel for hotel in hotels if hotel is not None]
         return hotels or get_mock_hotels(input_data)
-    except Exception:
+    except Exception as exc:
+        logger.exception("Google Places hotel search failed: %s", exc)
         return get_mock_hotels(input_data)
 
 
