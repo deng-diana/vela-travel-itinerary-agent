@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, memo, useCallback } from 'react'
+import { useEffect, useRef, useState, memo } from 'react'
 import type { FormEvent } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ArrowUp, CheckCircle2, ChevronDown, Check, ChevronLeft } from 'lucide-react'
