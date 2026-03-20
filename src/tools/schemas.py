@@ -23,6 +23,8 @@ class PlanningBrief(BaseModel):
     trip_length_days: int | None = None
     travel_party: str | None = None
     budget: BudgetTier | None = None
+    total_budget_amount: int | None = None  # user-stated cap, e.g. 500
+    total_budget_currency: str | None = None  # e.g. "GBP", "USD", "EUR"
     priorities: list[str] = Field(default_factory=list)
     constraints: list[str] = Field(default_factory=list)
     constraints_confirmed: bool = False
@@ -41,6 +43,8 @@ class PlanningBriefPatch(BaseModel):
     trip_length_days: int | None = None
     travel_party: str | None = None
     budget: BudgetTier | None = None
+    total_budget_amount: int | None = None
+    total_budget_currency: str | None = None
     priorities: list[str] | None = None
     constraints: list[str] | None = None
     constraints_confirmed: bool | None = None
@@ -184,6 +188,8 @@ class BudgetInput(BaseModel):
     travel_party: str | None = None
     hotel_nightly_rate_usd: int | None = None
     experience_daily_cost_usd: int | None = None
+    user_budget_amount: int | None = None
+    user_budget_currency: str | None = None
 
 
 class BudgetLineItem(BaseModel):
@@ -206,6 +212,9 @@ class BudgetEstimate(BaseModel):
     daily_average_usd: int
     line_items: list[BudgetLineItem] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    user_budget_amount: int | None = None  # original stated cap
+    user_budget_currency: str | None = None
+    over_budget: bool = False
 
 
 class VisaInput(BaseModel):

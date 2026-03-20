@@ -65,7 +65,9 @@ TOOL_SPECS: list[ToolSpec] = [
             "Compute a realistic trip cost breakdown. "
             "IMPORTANT: Call this ONLY after get_hotels has returned results so you can pass the "
             "actual hotel nightly rate. Provides line-item totals for accommodation, food, "
-            "activities, transport, and miscellaneous."
+            "activities, transport, and miscellaneous. "
+            "If the user stated a specific budget amount (e.g. '£500'), pass user_budget_amount "
+            "and user_budget_currency so the tool can flag if the estimate exceeds their cap."
         ),
         input_model=BudgetInput,
     ),

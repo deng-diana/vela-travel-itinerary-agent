@@ -45,13 +45,16 @@ def extract_brief_patch(
         "You extract a structured travel-planning patch from the latest user message.\n"
         "Return JSON only. Do not include markdown or commentary.\n"
         "Only fill fields that the user clearly adds, confirms, or changes. Leave all other fields null.\n"
-        "Schema keys: destination, dates_or_month, trip_length_days, travel_party, budget, priorities, "
+        "Schema keys: destination, dates_or_month, trip_length_days, travel_party, budget, "
+        "total_budget_amount, total_budget_currency, priorities, "
         "constraints, constraints_confirmed, style_notes, pace, hotel_preference, neighborhood_preference, "
         "dietary_preferences, must_do, must_avoid, day_swap_request, notes.\n"
         "Rules:\n"
         "- destination: the TARGET city/country of the trip. If the user says 'from London to Paris', "
         "destination is Paris (not London, not 'London to Paris'). Extract only the destination city/country.\n"
         "- Map budget to one of: budget, mid, luxury. Compute daily rate using trip_length_days from the existing brief (or estimate 3 days if unknown). <$120/day → budget; $120–400/day → mid; >$400/day → luxury. Example: '$1500 total for 3 days' = $500/day → luxury.\n"
+        "- total_budget_amount: if the user states a numeric budget (e.g. '£500', '$2000'), extract the raw integer. null if not stated.\n"
+        "- total_budget_currency: the currency code (GBP, USD, EUR). null if not stated.\n"
         "- Map pace to one of: slow, balanced, packed.\n"
         "- priorities/style_notes/must_do/must_avoid/dietary_preferences/constraints are arrays when present.\n"
         "- Set constraints_confirmed=true if the user explicitly says there are no special restrictions.\n"
@@ -116,6 +119,12 @@ def supplement_patch_from_text(
         budget = _extract_budget(lower_text)
         if budget:
             patch_data["budget"] = budget
+
+    if not existing_brief.total_budget_amount and patch.total_budget_amount is None:
+        amount, currency = _extract_budget_amount(lower_text)
+        if amount:
+            patch_data["total_budget_amount"] = amount
+            patch_data["total_budget_currency"] = currency
 
     inferred_constraints = _extract_constraints_from_text(lower_text)
     if inferred_constraints:
@@ -425,6 +434,31 @@ def _extract_budget(lower_text: str) -> str | None:
     if amount > 2500:
         return "luxury"
     return "mid"
+
+
+def _extract_budget_amount(lower_text: str) -> tuple[int | None, str | None]:
+    """Extract the raw numeric budget and currency from user text."""
+    currency_map = {
+        "gbp": "GBP", "pounds": "GBP", "pound": "GBP", "£": "GBP",
+        "usd": "USD", "dollars": "USD", "dollar": "USD", "$": "USD",
+        "eur": "EUR", "euros": "EUR", "euro": "EUR", "€": "EUR",
+    }
+    # Match patterns like "£500", "$1,500", "500 pounds", "1500 usd"
+    # Symbol-first: £500, $1500, €800
+    match = re.search(r"([£$€])\s*([\d,]+)", lower_text)
+    if match:
+        symbol = match.group(1)
+        amount = int(match.group(2).replace(",", ""))
+        return amount, currency_map.get(symbol, "USD")
+
+    # Number-first: 500 pounds, 1500 usd
+    match = re.search(r"([\d,]+)\s*(gbp|pounds?|usd|dollars?|eur|euros?)", lower_text)
+    if match:
+        amount = int(match.group(1).replace(",", ""))
+        currency_word = match.group(2).lower()
+        return amount, currency_map.get(currency_word, "USD")
+
+    return None, None
 
 
 def _extract_pace_from_text(lower_text: str) -> str | None:

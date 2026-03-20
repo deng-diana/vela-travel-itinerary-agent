@@ -97,6 +97,22 @@ def estimate_budget(inp: BudgetInput) -> BudgetEstimate:
         ),
     ]
 
+    # Compare against user-stated budget cap (approximate conversion to USD)
+    user_amount = inp.user_budget_amount
+    user_currency = inp.user_budget_currency
+    over_budget = False
+    if user_amount:
+        _fx_to_usd = {"GBP": 1.27, "EUR": 1.08, "USD": 1.0}
+        user_budget_usd = int(user_amount * _fx_to_usd.get(user_currency or "USD", 1.0))
+        if grand_total > user_budget_usd:
+            over_budget = True
+            overage = grand_total - user_budget_usd
+            notes.insert(0,
+                f"⚠️ Estimated cost (~${grand_total:,}) exceeds your stated "
+                f"{user_currency or 'USD'} {user_amount:,} budget (~${user_budget_usd:,} USD) "
+                f"by ~${overage:,}. Consider shorter stay or budget-tier options."
+            )
+
     return BudgetEstimate(
         destination=inp.destination,
         trip_length_days=days,
@@ -111,4 +127,7 @@ def estimate_budget(inp: BudgetInput) -> BudgetEstimate:
         daily_average_usd=daily_average,
         line_items=line_items,
         notes=notes,
+        user_budget_amount=user_amount,
+        user_budget_currency=user_currency,
+        over_budget=over_budget,
     )
