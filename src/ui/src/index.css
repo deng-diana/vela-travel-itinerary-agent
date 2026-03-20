@@ -39,7 +39,7 @@ input::placeholder {
   --bg-card: rgba(245, 240, 232, 0.03);
 
   /* Primary Colors */
-  --color-accent: #C4FF4D;
+  --color-accent: #A1F200;
   --color-accent-secondary: #2A7F6F;
   --color-text: #FFFFFF;
   --color-text-muted: rgba(255, 255, 255, 0.6);
@@ -49,7 +49,7 @@ input::placeholder {
   --story-bg: #101603;
   --story-text: #FFFFFF;
   --story-text-muted: rgba(255, 255, 255, 0.6);
-  --story-accent: #C4FF4D;
+  --story-accent: #A1F200;
   --story-accent2: #2A7F6F;
   --story-border: rgba(255, 255, 255, 0.1);
   --story-overlay: rgba(16, 22, 3, 0.8);
