@@ -32,27 +32,37 @@ def get_experiences(input_data: ExperienceSearchInput) -> list[ExperienceOption]
 
 
 def build_text_queries(input_data: ExperienceSearchInput) -> list[str]:
-    parts: list[str] = []
+    dest = input_data.destination
+    queries: list[str] = []
 
+    # 1. Always search for iconic landmarks and must-see attractions first
+    queries.append(f"top iconic landmarks and must-see attractions in {dest}")
+
+    # 2. Interest-based search
     if input_data.interests:
-        parts.append(", ".join(input_data.interests))
+        interest_text = ", ".join(input_data.interests)
+        queries.append(f"best {interest_text} experiences in {dest}")
 
-    parts.append("things to do")
+    # 3. Famous museums and cultural sites (most cities have these)
+    queries.append(f"famous museums and cultural sites in {dest}")
 
-    if input_data.travel_party:
-        parts.append(f"for {input_data.travel_party}")
-
-    parts.append(f"in {input_data.destination}")
-
-    queries = [" ".join(parts)]
+    # 4. Interest-specific deep dives
     joined_interest_text = " ".join(input_data.interests).lower()
 
     if any(token in joined_interest_text for token in ("hidden", "local", "gem", "independent", "neighborhood")):
-        queries.append(f"hidden gems in {input_data.destination}")
-        queries.append(f"local neighborhood walks in {input_data.destination}")
+        queries.append(f"hidden gems and local favorites in {dest}")
 
     if any(token in joined_interest_text for token in ("art", "design", "culture", "museum", "gallery")):
-        queries.append(f"independent galleries and design spots in {input_data.destination}")
+        queries.append(f"best art galleries and design spots in {dest}")
+
+    if any(token in joined_interest_text for token in ("food", "dining", "culinary", "gastronomy")):
+        queries.append(f"food tours and culinary experiences in {dest}")
+
+    if any(token in joined_interest_text for token in ("night", "nightlife", "bar", "club")):
+        queries.append(f"best nightlife and evening experiences in {dest}")
+
+    if any(token in joined_interest_text for token in ("nature", "outdoor", "hiking", "park")):
+        queries.append(f"best parks and outdoor activities in {dest}")
 
     return list(dict.fromkeys(query for query in queries if query.strip()))
 
@@ -112,6 +122,9 @@ def map_place_to_experience(place: dict, input_data: ExperienceSearchInput) -> E
     neighborhood = infer_neighborhood(place)
     photo_name, photo_attribution = extract_photo_metadata(place)
 
+    rating = place.get("rating")
+    user_rating_count = place.get("userRatingCount")
+
     return ExperienceOption(
         id=place_id,
         name=display_name,
@@ -121,9 +134,9 @@ def map_place_to_experience(place: dict, input_data: ExperienceSearchInput) -> E
         neighborhood=neighborhood,
         booking_link=maps_url,
         best_time=estimate_best_time(category),
-        why_it_fits=build_why_it_fits(input_data, category, neighborhood),
-        rating=place.get("rating"),
-        user_rating_count=place.get("userRatingCount"),
+        why_it_fits=build_why_it_fits(input_data, display_name, category, neighborhood, rating, user_rating_count),
+        rating=rating,
+        user_rating_count=user_rating_count,
         maps_url=maps_url,
         photo_name=photo_name,
         photo_attribution=photo_attribution,
@@ -233,12 +246,38 @@ def estimate_best_time(category: str) -> str:
     return "Afternoon"
 
 
-def build_why_it_fits(input_data: ExperienceSearchInput, category: str, neighborhood: str) -> str:
+def build_why_it_fits(
+    input_data: ExperienceSearchInput,
+    name: str,
+    category: str,
+    neighborhood: str,
+    rating: float | None,
+    user_rating_count: int | None,
+) -> str:
+    """Build a specific, compelling reason to visit this place."""
+    parts: list[str] = []
+
+    # Rating-based credibility
+    if rating and rating >= 4.5 and user_rating_count and user_rating_count > 5000:
+        parts.append(f"Rated {rating:.1f} by {user_rating_count:,}+ visitors")
+    elif rating and rating >= 4.0 and user_rating_count and user_rating_count > 1000:
+        parts.append(f"Highly rated ({rating:.1f}) with {user_rating_count:,}+ reviews")
+
+    # Category-specific context
+    cat_lower = category.lower()
+    if "museum" in cat_lower or "gallery" in cat_lower:
+        parts.append(f"{category.lower()} in {neighborhood}")
+    elif "landmark" in cat_lower or "historic" in cat_lower or "local attraction" in cat_lower:
+        parts.append(f"iconic {input_data.destination} landmark")
+    elif "park" in cat_lower or "garden" in cat_lower:
+        parts.append(f"green space in {neighborhood} — good for a slower-paced break")
+    else:
+        parts.append(f"{category.lower()} experience in {neighborhood}")
+
+    # Interest alignment
     if input_data.interests:
-        return (
-            f"Fits the trip's focus on {', '.join(input_data.interests[:2])} while giving you a usable stop around "
-            f"{neighborhood}."
-        )
-    if input_data.travel_party:
-        return f"A practical {category.lower()} stop for a {input_data.travel_party} trip in {input_data.destination}."
-    return f"A strong local experience in {neighborhood} that helps the itinerary feel less generic."
+        matching = [i for i in input_data.interests if i.lower() in name.lower() or i.lower() in cat_lower]
+        if matching:
+            parts.append(f"aligns with your interest in {', '.join(matching)}")
+
+    return ". ".join(parts) + "." if parts else f"{category} in {neighborhood}."

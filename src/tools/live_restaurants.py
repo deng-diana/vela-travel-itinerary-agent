@@ -137,7 +137,8 @@ def map_place_to_restaurant(place: dict, input_data: RestaurantSearchInput) -> R
         neighborhood=neighborhood,
         must_order_dish=suggest_signature_dish(cuisine, display_name, input_data.destination),
         reservation_link=maps_url,
-        why_it_fits=build_why_it_fits(input_data, neighborhood, cuisine),
+        why_it_fits=build_why_it_fits(input_data, display_name, neighborhood, cuisine,
+                                      place.get("rating"), place.get("userRatingCount")),
         rating=place.get("rating"),
         user_rating_count=place.get("userRatingCount"),
         maps_url=maps_url,
@@ -243,9 +244,41 @@ def suggest_signature_dish(cuisine: str, restaurant_name: str, destination: str)
     return "Chef's signature dish"
 
 
-def build_why_it_fits(input_data: RestaurantSearchInput, neighborhood: str, cuisine: str) -> str:
-    if input_data.neighborhoods and neighborhood in input_data.neighborhoods:
-        return f"A strong fit for your plan in {neighborhood}, with a {cuisine.lower()} angle."
-    if input_data.interests:
-        return f"Matches the trip's focus on {', '.join(input_data.interests[:2])} while staying practical for the route."
-    return f"A useful local option in {input_data.destination} that can anchor one part of the itinerary."
+def build_why_it_fits(
+    input_data: RestaurantSearchInput,
+    name: str,
+    neighborhood: str,
+    cuisine: str,
+    rating: float | None,
+    user_rating_count: int | None,
+) -> str:
+    """Build a specific, compelling reason to dine here."""
+    parts: list[str] = []
+
+    # Rating credibility
+    if rating and rating >= 4.5 and user_rating_count and user_rating_count > 1000:
+        parts.append(f"Rated {rating:.1f} by {user_rating_count:,}+ diners")
+    elif rating and rating >= 4.0:
+        parts.append(f"{rating:.1f}-star {cuisine.lower()}")
+
+    # Location context
+    parts.append(f"in {neighborhood}")
+
+    # Cuisine description
+    cuisine_lower = cuisine.lower()
+    if "french" in cuisine_lower or "bistro" in cuisine_lower:
+        parts.append("classic French dining")
+    elif "italian" in cuisine_lower:
+        parts.append("authentic Italian kitchen")
+    elif "japanese" in cuisine_lower or "sushi" in cuisine_lower:
+        parts.append("Japanese culinary tradition")
+    elif "café" in cuisine_lower or "coffee" in cuisine_lower:
+        parts.append("perfect for a relaxed stop between sights")
+
+    # Budget alignment
+    price_map = {"budget": "budget-friendly", "luxury": "upscale"}
+    budget_label = price_map.get(input_data.budget)
+    if budget_label:
+        parts.append(f"{budget_label} option")
+
+    return ". ".join(p.capitalize() if i == 0 else p for i, p in enumerate(parts)) + "."
