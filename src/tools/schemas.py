@@ -96,6 +96,7 @@ class DailyStructureInput(BaseModel):
     hotel_name: str = Field(..., min_length=2)
     restaurant_names: list[str] = Field(default_factory=list)
     experience_names: list[str] = Field(default_factory=list)
+    experience_durations: dict[str, float] = Field(default_factory=dict)  # name → estimated hours
     pace: Pace = "balanced"
     style_notes: list[str] = Field(default_factory=list)
     must_do: list[str] = Field(default_factory=list)

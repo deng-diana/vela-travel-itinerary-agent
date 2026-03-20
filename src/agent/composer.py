@@ -50,9 +50,11 @@ def build_daily_structure_input(
     ranked_experiences = context["ranked_experiences"]
 
     restaurant_names = [r.name for r in ranked_restaurants[: max((brief.trip_length_days or 1) + 2, 5)]]
-    # Provide enough experiences: 2-3 per full day (morning + afternoon + optional evening)
-    experience_count = max((brief.trip_length_days or 1) * 3, 6)
-    experience_names = [e.name for e in ranked_experiences[:experience_count]]
+    # Provide enough experiences to fill time-based slots (5-7 per full day)
+    experience_count = max((brief.trip_length_days or 1) * 6, 12)
+    selected_experiences = ranked_experiences[:experience_count]
+    experience_names = [e.name for e in selected_experiences]
+    experience_durations = {e.name: e.duration_hours for e in selected_experiences}
 
     return DailyStructureInput(
         destination=brief.destination or "",
@@ -64,6 +66,7 @@ def build_daily_structure_input(
         hotel_name=selected_hotel.name if selected_hotel else "Selected stay",
         restaurant_names=restaurant_names,
         experience_names=experience_names,
+        experience_durations=experience_durations,
         pace=brief.pace or "balanced",
         style_notes=brief.style_notes,
         must_do=brief.must_do,
